@@ -1,0 +1,324 @@
+
+import processing.serial.*;
+
+// ==========================================
+// SERIAL CONFIGURATION
+// ==========================================
+
+Serial arduino;
+
+// Change this to your Arduino's serial port.
+// On Windows, this will usually be something like "COM3".
+String portName = "COM6";
+
+
+// ==========================================
+// KEYBOARD STATE
+// ==========================================
+
+// Track which keys are currently held.
+boolean wPressed = false;
+boolean sPressed = false;
+boolean aPressed = false;
+boolean dPressed = false;
+boolean rPressed = false;
+
+// Alternate R rotation direction on each press.
+boolean rotateClockwise = true;
+
+// Current motor speed (PWM: 0-255).
+int motorSpeed = 180;
+
+// Steering strength as a percentage of speed.
+float steeringFactor = 0.5;
+
+// Current movement values.
+int throttle = 0;
+int steering = 0;
+
+int leftSpeed = 0;
+int rightSpeed = 0;
+
+// Track the last command to avoid unnecessary sends.
+String lastCommand = "";
+
+// Send periodically so Arduino knows Processing
+// is still connected.
+int lastSendTime = 0;
+int sendInterval = 100;
+
+
+// ==========================================
+// SETUP
+// ==========================================
+
+void setup() {
+  size(600, 480);
+
+  // List all available serial ports.
+  println("Available serial ports:");
+  printArray(Serial.list());
+
+  // Connect to the Arduino.
+  arduino = new Serial(this, portName, 9600);
+
+  // Wait for Arduino to reset.
+  delay(2000);
+
+  println("Robot controller ready!");
+}
+
+
+// ==========================================
+// MAIN LOOP
+// ==========================================
+
+void draw() {
+  background(30);
+
+  // Calculate movement from held keys.
+  updateControls();
+
+  // Send current movement to Arduino.
+  sendMovement();
+
+  // Draw the controller interface.
+  drawInterface();
+}
+
+
+// ==========================================
+// MOVEMENT CALCULATION
+// ==========================================
+
+void updateControls() {
+
+  // Reset movement values each frame.
+  throttle = 0;
+  steering = 0;
+
+  // Determine forward/backward movement.
+  if (wPressed && !sPressed) {
+    throttle = motorSpeed;
+  }
+  else if (sPressed && !wPressed) {
+    throttle = -motorSpeed;
+  }
+
+  // Determine left/right steering.
+  int turnAmount = round(motorSpeed * steeringFactor);
+
+  if (aPressed && !dPressed) {
+    steering = -turnAmount;
+  }
+  else if (dPressed && !aPressed) {
+    steering = turnAmount;
+  }
+
+  // If only A or D is held, rotate in place.
+  if (throttle == 0 && steering != 0) {
+    steering = steering < 0 ? -motorSpeed : motorSpeed;
+  }
+
+  // R overrides normal movement while held.
+  if (rPressed) {
+    throttle = 0;
+
+    if (rotateClockwise) {
+      steering = motorSpeed;
+    }
+    else {
+      steering = -motorSpeed;
+    }
+  }
+
+  // Calculate individual wheel speeds.
+  leftSpeed = constrain(
+    throttle + steering, -255, 255
+  );
+
+  rightSpeed = constrain(
+    throttle - steering, -255, 255
+  );
+}
+
+
+// ==========================================
+// SERIAL COMMUNICATION
+// ==========================================
+
+void sendMovement() {
+
+  // Send motor speeds in the format:
+  // leftSpeed,rightSpeed
+  String command = leftSpeed + "," + rightSpeed + "\n";
+
+  // Send when values change or periodically.
+  if (!command.equals(lastCommand) ||
+      millis() - lastSendTime >= sendInterval) {
+
+    arduino.write(command);
+
+    lastCommand = command;
+    lastSendTime = millis();
+  }
+}
+
+
+// ==========================================
+// KEYBOARD INPUT
+// ==========================================
+
+void keyPressed() {
+
+  char k = Character.toLowerCase(key);
+
+  if (k == 'w') wPressed = true;
+  if (k == 's') sPressed = true;
+  if (k == 'a') aPressed = true;
+  if (k == 'd') dPressed = true;
+
+  // R alternates direction only on a new press.
+  if (k == 'r' && !rPressed) {
+    rPressed = true;
+    rotateClockwise = !rotateClockwise;
+  }
+
+  // Number keys adjust the motor speed.
+  if (k >= '1' && k <= '9') {
+    int level = k - '0';
+    motorSpeed = round(map(level, 1, 9, 50, 255));
+  }
+
+  // Emergency stop command.
+  if (k == 'x' || key == ' ') {
+    clearKeys();
+  }
+}
+
+void keyReleased() {
+
+  char k = Character.toLowerCase(key);
+
+  if (k == 'w') wPressed = false;
+  if (k == 's') sPressed = false;
+  if (k == 'a') aPressed = false;
+  if (k == 'd') dPressed = false;
+  if (k == 'r') rPressed = false;
+}
+
+
+// ==========================================
+// RESET KEYBOARD STATE
+// ==========================================
+
+void clearKeys() {
+  wPressed = false;
+  sPressed = false;
+  aPressed = false;
+  dPressed = false;
+  rPressed = false;
+
+  throttle = 0;
+  steering = 0;
+  leftSpeed = 0;
+  rightSpeed = 0;
+
+  // Immediately send a stop command.
+  arduino.write("0,0\n");
+  lastCommand = "0,0\n";
+  lastSendTime = millis();
+}
+
+
+// ==========================================
+// VISUAL INTERFACE
+// ==========================================
+
+void drawInterface() {
+
+  fill(255);
+  textAlign(CENTER);
+
+  textSize(25);
+  text("COGS 300 - Robot Controller", width/2, 45);
+
+  textSize(14);
+  text("Hold multiple keys to combine movements",
+       width/2, 75);
+
+  // Draw WASD keyboard layout.
+  drawKey("W", 275, 110, wPressed);
+
+  drawKey("A", 215, 170, aPressed);
+  drawKey("S", 275, 170, sPressed);
+  drawKey("D", 335, 170, dPressed);
+
+  // Additional rotation key.
+  drawKey("R", 275, 240, rPressed);
+
+  // Display current movement values.
+  fill(255);
+  textSize(16);
+
+  text("Throttle: " + throttle, width/2, 325);
+  text("Steering: " + steering, width/2, 350);
+
+  text("Left Motor: " + leftSpeed,
+       width/2, 380);
+
+  text("Right Motor: " + rightSpeed,
+       width/2, 405);
+
+  textSize(13);
+  fill(180);
+  text("Speed: " + motorSpeed + "/255  |  1-9 to adjust",
+       width/2, 440);
+
+  text("X / Space: Stop",
+       width/2, 462);
+}
+
+
+// ==========================================
+// DRAW KEY BUTTON
+// ==========================================
+
+void drawKey(String label, int x, int y,
+             boolean pressed) {
+
+  // Highlight pressed keys.
+  if (pressed) {
+    fill(50, 180, 100);
+  }
+  else {
+    fill(75);
+  }
+
+  stroke(150);
+  rect(x, y, 50, 50, 8);
+
+  fill(255);
+  textAlign(CENTER, CENTER);
+  textSize(20);
+
+  text(label, x + 25, y + 25);
+
+  textAlign(CENTER);
+}
+
+
+// ==========================================
+// CLEANUP
+// ==========================================
+
+void exit() {
+
+  // Stop motors before closing Processing.
+  if (arduino != null) {
+    arduino.write("0,0\n");
+    arduino.stop();
+  }
+
+  super.exit();
+}
