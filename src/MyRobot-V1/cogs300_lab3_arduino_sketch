@@ -1,0 +1,234 @@
+
+/*
+ * COGS 300 - Lab 03: Robot Movement
+ *
+ * Arduino motor controller for Processing IDE.
+ *
+ * Features:
+ * - Independent control of two DC motors
+ * - Forward and backward movement
+ * - Left and right steering while driving
+ * - Rotation in place (opposite wheel directions)
+ * - PWM speed control
+ * - Serial communication with Processing
+ * - Automatic stop if communication is lost
+ *
+ * Processing sends commands in the format:
+ * leftSpeed,rightSpeed\n
+ *
+ * Example:
+ * 180,180    -> Forward
+ * -180,-180  -> Backward
+ * 90,255     -> Turn left while moving forward
+ * 255,90     -> Turn right while moving forward
+ * -180,180   -> Rotate left in place
+ * 180,-180   -> Rotate right in place
+ * 0,0        -> Stop
+ */
+
+// ==========================================
+// MOTOR PIN CONFIGURATION
+// ==========================================
+
+// Motor A (Left Wheel)
+const int enA = 5;   // PWM speed control
+const int in1 = 7;   // Direction pin 1
+const int in2 = 8;   // Direction pin 2
+
+// Motor B (Right Wheel)
+const int enB = 6;   // PWM speed control
+const int in3 = 9;   // Direction pin 1
+const int in4 = 10;  // Direction pin 2
+
+
+// ==========================================
+// SERIAL COMMUNICATION
+// ==========================================
+
+// Buffer used to store incoming serial commands.
+String inputBuffer = "";
+
+// Time when the last valid command was received.
+unsigned long lastCommandTime = 0;
+
+// Stop motors if no command arrives within 500 ms.
+const unsigned long COMMAND_TIMEOUT = 500;
+
+
+// ==========================================
+// SETUP
+// ==========================================
+
+void setup() {
+
+  // Configure motor pins as outputs.
+  pinMode(enA, OUTPUT);
+  pinMode(in1, OUTPUT);
+  pinMode(in2, OUTPUT);
+
+  pinMode(enB, OUTPUT);
+  pinMode(in3, OUTPUT);
+  pinMode(in4, OUTPUT);
+
+  // Start serial communication with Processing.
+  Serial.begin(9600);
+
+  // Ensure motors are stopped at startup.
+  setMotors(0, 0);
+
+  // Initialize the communication timer.
+  lastCommandTime = millis();
+
+  Serial.println("Arduino robot controller ready.");
+}
+
+
+// ==========================================
+// MOTOR CONTROL
+// ==========================================
+
+/*
+ * Controls both motors independently.
+ *
+ * Positive values = forward
+ * Negative values = backward
+ * Zero = stop
+ *
+ * Valid speed range: -255 to 255
+ *
+ * Motor direction logic matches our robot's
+ * physical motor orientation.
+ */
+
+void setMotors(int leftSpeed, int rightSpeed) {
+
+  // Restrict motor speeds to the PWM range.
+  leftSpeed = constrain(leftSpeed, -255, 255);
+  rightSpeed = constrain(rightSpeed, -255, 255);
+
+  // ------------------------------------------
+  // LEFT MOTOR (Motor A)
+  // ------------------------------------------
+
+  if (leftSpeed > 0) {
+    digitalWrite(in1, LOW);
+    digitalWrite(in2, HIGH);
+  }
+  else if (leftSpeed < 0) {
+    digitalWrite(in1, HIGH);
+    digitalWrite(in2, LOW);
+  }
+  else {
+    digitalWrite(in1, LOW);
+    digitalWrite(in2, LOW);
+  }
+
+  // ------------------------------------------
+  // RIGHT MOTOR (Motor B)
+  // ------------------------------------------
+
+  // Reversed direction to match physical setup.
+  if (rightSpeed > 0) {
+    digitalWrite(in3, HIGH);
+    digitalWrite(in4, LOW);
+  }
+  else if (rightSpeed < 0) {
+    digitalWrite(in3, LOW);
+    digitalWrite(in4, HIGH);
+  }
+  else {
+    digitalWrite(in3, LOW);
+    digitalWrite(in4, LOW);
+  }
+
+  // Apply PWM speed to both motors.
+  analogWrite(enA, abs(leftSpeed));
+  analogWrite(enB, abs(rightSpeed));
+}
+
+
+// ==========================================
+// SERIAL COMMAND PROCESSING
+// ==========================================
+
+/*
+ * Processes commands sent by Processing.
+ *
+ * Expected format:
+ * leftSpeed,rightSpeed
+ *
+ * Example:
+ * 150,200
+ *
+ * The newline character marks the end
+ * of each command.
+ */
+
+void processCommand(String command) {
+
+  // Locate the comma separating motor speeds.
+  int commaIndex = command.indexOf(',');
+
+  // Ignore commands without a comma.
+  if (commaIndex <= 0) {
+    return;
+  }
+
+  // Extract left and right motor values.
+  String leftText = command.substring(0, commaIndex);
+  String rightText = command.substring(commaIndex + 1);
+
+  // Convert text values into integers.
+  int leftSpeed = leftText.toInt();
+  int rightSpeed = rightText.toInt();
+
+  // Update motor speeds.
+  setMotors(leftSpeed, rightSpeed);
+
+  // Reset the communication timeout.
+  lastCommandTime = millis();
+}
+
+
+// ==========================================
+// MAIN LOOP
+// ==========================================
+
+void loop() {
+
+  // Read incoming serial data from Processing.
+  while (Serial.available() > 0) {
+
+    char incoming = Serial.read();
+
+    // A newline marks a complete command.
+    if (incoming == '\n') {
+
+      // Process the completed command.
+      processCommand(inputBuffer);
+
+      // Clear the buffer for the next command.
+      inputBuffer = "";
+    }
+    else if (incoming != '\r') {
+
+      // Store characters until newline arrives.
+      if (inputBuffer.length() < 32) {
+        inputBuffer += incoming;
+      }
+      else {
+        // Discard excessively long commands.
+        inputBuffer = "";
+      }
+    }
+  }
+
+  // ------------------------------------------
+  // COMMUNICATION SAFETY TIMEOUT
+  // ------------------------------------------
+
+  // Stop motors if Processing stops sending data.
+  if (millis() - lastCommandTime > COMMAND_TIMEOUT) {
+    setMotors(0, 0);
+  }
+}
