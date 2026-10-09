@@ -8,22 +8,17 @@
  * - Independent control of two DC motors
  * - Forward and backward movement
  * - Left and right steering while driving
- * - Rotation in place (opposite wheel directions)
+ * - Rotation in place
  * - PWM speed control
  * - Serial communication with Processing
  * - Automatic stop if communication is lost
  *
  * Processing sends commands in the format:
- * leftSpeed,rightSpeed\n
+ * leftSpeed,rightSpeed
  *
- * Example:
- * 180,180    -> Forward
- * -180,-180  -> Backward
- * 90,255     -> Turn left while moving forward
- * 255,90     -> Turn right while moving forward
- * -180,180   -> Rotate left in place
- * 180,-180   -> Rotate right in place
- * 0,0        -> Stop
+ * Positive = forward
+ * Negative = backward
+ * Zero = stop
  */
 
 // ==========================================
@@ -32,26 +27,26 @@
 
 // Motor A (Left Wheel)
 const int enA = 5;   // PWM speed control
-const int in1 = 7;   // Direction pin 1
-const int in2 = 8;   // Direction pin 2
+const int in1 = 6;   // Direction pin 1
+const int in2 = 7;   // Direction pin 2
 
 // Motor B (Right Wheel)
-const int enB = 6;   // PWM speed control
-const int in3 = 9;   // Direction pin 1
-const int in4 = 10;  // Direction pin 2
+const int enB = 9;   // PWM speed control
+const int in3 = 10;  // Direction pin 1
+const int in4 = 11;  // Direction pin 2
 
 
 // ==========================================
 // SERIAL COMMUNICATION
 // ==========================================
 
-// Buffer used to store incoming serial commands.
+// Buffer for incoming serial commands.
 String inputBuffer = "";
 
-// Time when the last valid command was received.
+// Track the time of the last valid command.
 unsigned long lastCommandTime = 0;
 
-// Stop motors if no command arrives within 500 ms.
+// Stop motors if no command is received for 500 ms.
 const unsigned long COMMAND_TIMEOUT = 500;
 
 
@@ -70,13 +65,12 @@ void setup() {
   pinMode(in3, OUTPUT);
   pinMode(in4, OUTPUT);
 
-  // Start serial communication with Processing.
+  // Initialize serial communication.
   Serial.begin(9600);
 
-  // Ensure motors are stopped at startup.
+  // Ensure the robot starts stationary.
   setMotors(0, 0);
 
-  // Initialize the communication timer.
   lastCommandTime = millis();
 
   Serial.println("Arduino robot controller ready.");
@@ -94,15 +88,15 @@ void setup() {
  * Negative values = backward
  * Zero = stop
  *
- * Valid speed range: -255 to 255
+ * Valid range: -255 to 255
  *
- * Motor direction logic matches our robot's
- * physical motor orientation.
+ * Motor B direction has been reversed
+ * to account for the current wiring.
  */
 
 void setMotors(int leftSpeed, int rightSpeed) {
 
-  // Restrict motor speeds to the PWM range.
+  // Restrict speeds to valid PWM values.
   leftSpeed = constrain(leftSpeed, -255, 255);
   rightSpeed = constrain(rightSpeed, -255, 255);
 
@@ -127,21 +121,21 @@ void setMotors(int leftSpeed, int rightSpeed) {
   // RIGHT MOTOR (Motor B)
   // ------------------------------------------
 
-  // Reversed direction to match physical setup.
+  // Reversed relative to the previous sketch.
   if (rightSpeed > 0) {
-    digitalWrite(in3, HIGH);
-    digitalWrite(in4, LOW);
-  }
-  else if (rightSpeed < 0) {
     digitalWrite(in3, LOW);
     digitalWrite(in4, HIGH);
+  }
+  else if (rightSpeed < 0) {
+    digitalWrite(in3, HIGH);
+    digitalWrite(in4, LOW);
   }
   else {
     digitalWrite(in3, LOW);
     digitalWrite(in4, LOW);
   }
 
-  // Apply PWM speed to both motors.
+  // Apply PWM speeds.
   analogWrite(enA, abs(leftSpeed));
   analogWrite(enB, abs(rightSpeed));
 }
@@ -152,21 +146,19 @@ void setMotors(int leftSpeed, int rightSpeed) {
 // ==========================================
 
 /*
- * Processes commands sent by Processing.
- *
- * Expected format:
- * leftSpeed,rightSpeed
+ * Processing sends:
+ * leftSpeed,rightSpeed\n
  *
  * Example:
- * 150,200
+ * 180,180
  *
- * The newline character marks the end
- * of each command.
+ * The comma separates the motor values.
+ * The newline marks the end of a command.
  */
 
 void processCommand(String command) {
 
-  // Locate the comma separating motor speeds.
+  // Locate the comma separating the speeds.
   int commaIndex = command.indexOf(',');
 
   // Ignore commands without a comma.
@@ -174,18 +166,18 @@ void processCommand(String command) {
     return;
   }
 
-  // Extract left and right motor values.
+  // Extract the motor speed values.
   String leftText = command.substring(0, commaIndex);
   String rightText = command.substring(commaIndex + 1);
 
-  // Convert text values into integers.
+  // Convert strings into integers.
   int leftSpeed = leftText.toInt();
   int rightSpeed = rightText.toInt();
 
-  // Update motor speeds.
+  // Apply the motor speeds.
   setMotors(leftSpeed, rightSpeed);
 
-  // Reset the communication timeout.
+  // Reset communication timeout.
   lastCommandTime = millis();
 }
 
@@ -196,38 +188,38 @@ void processCommand(String command) {
 
 void loop() {
 
-  // Read incoming serial data from Processing.
+  // Read incoming serial characters.
   while (Serial.available() > 0) {
 
     char incoming = Serial.read();
 
-    // A newline marks a complete command.
+    // A newline indicates a complete command.
     if (incoming == '\n') {
 
-      // Process the completed command.
+      // Process the received command.
       processCommand(inputBuffer);
 
-      // Clear the buffer for the next command.
+      // Clear the buffer.
       inputBuffer = "";
     }
     else if (incoming != '\r') {
 
-      // Store characters until newline arrives.
+      // Store incoming characters.
       if (inputBuffer.length() < 32) {
         inputBuffer += incoming;
       }
       else {
-        // Discard excessively long commands.
+        // Discard excessively long messages.
         inputBuffer = "";
       }
     }
   }
 
-  // ------------------------------------------
+  // ==========================================
   // COMMUNICATION SAFETY TIMEOUT
-  // ------------------------------------------
+  // ==========================================
 
-  // Stop motors if Processing stops sending data.
+  // Stop motors if Processing disconnects.
   if (millis() - lastCommandTime > COMMAND_TIMEOUT) {
     setMotors(0, 0);
   }
