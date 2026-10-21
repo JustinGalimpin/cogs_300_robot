@@ -1,19 +1,15 @@
 
 /*
- * COGS 300 - Lab 05: Autonomous Follow Me Robot
+ * COGS 300 - Lab 05: Autonomous Wall Following
  *
- * Uses an HC-SR04 ultrasonic sensor to maintain
- * a target distance from an object.
+ * Uses two HC-SR04 ultrasonic sensors:
+ * - Front sensor detects approaching obstacles.
+ * - Left sensor maintains distance from a wall.
  *
- * Features:
- * - Autonomous forward/backward movement
- * - Proportional controller (P-controller)
- * - Ultrasonic distance measurement
- * - Automatic stopping near target distance
- * - Stops when no valid echo is detected
- * - Serial distance and motor speed reporting
+ * A proportional controller adjusts the left
+ * and right wheel speeds to follow a left wall.
  *
- * No Processing commands are required.
+ * No Processing IDE is required.
  */
 
 
@@ -36,39 +32,45 @@ const int in4 = 11;
 // ULTRASONIC SENSOR CONFIGURATION
 // ==========================================
 
-// HC-SR04 sensor pins.
-const int trigPin = 2;
-const int echoPin = 3;
+// Front-facing ultrasonic sensor.
+const int frontTrigPin = 2;
+const int frontEchoPin = 3;
 
-// Most recent distance measurement in cm.
-// -1 means no valid echo was detected.
-float distance = -1;
+// Left-facing ultrasonic sensor.
+const int leftTrigPin = 13;
+const int leftEchoPin = 12;
 
-// Track the last sensor measurement.
+// Most recent distance measurements.
+// -1 indicates no valid echo.
+float frontDistance = -1;
+float leftDistance = -1;
+
+// Timing for sensor measurements.
 unsigned long lastSensorTime = 0;
-
-// Measure distance every 100 milliseconds.
 const unsigned long SENSOR_INTERVAL = 100;
 
 
 // ==========================================
-// FOLLOW ME CONTROLLER CONFIGURATION
+// WALL-FOLLOWING CONFIGURATION
 // ==========================================
 
-// Desired distance from the detected object (cm).
-const float targetDistance = 15.0;
+// Desired distance from the left wall (cm).
+const float targetWallDistance = 15.0;
 
-// Proportional gain.
-// Higher values produce stronger corrections.
-const float Kp = 5.0;
+// Normal forward motor speed (PWM).
+const int baseSpeed = 120;
 
-// Allow a small tolerance around the target.
-// Robot stops within +/- 2 cm of target.
+// Proportional gain for steering correction.
+const float Kp = 3.0;
+
+// Ignore small distance errors (+/- 2 cm).
 const float distanceTolerance = 2.0;
 
-// Maximum allowed motor speed (PWM).
-const int minMotorSpeed = 90;
-const int maxMotorSpeed = 180;
+// Maximum steering correction.
+const int maxCorrection = 80;
+
+// Stop if an obstacle is closer than 20 cm.
+const float frontStopDistance = 20.0;
 
 
 // ==========================================
@@ -77,7 +79,7 @@ const int maxMotorSpeed = 180;
 
 void setup() {
 
-  // Configure motor pins as outputs.
+  // Configure motor pins.
   pinMode(enA, OUTPUT);
   pinMode(in1, OUTPUT);
   pinMode(in2, OUTPUT);
@@ -86,22 +88,24 @@ void setup() {
   pinMode(in3, OUTPUT);
   pinMode(in4, OUTPUT);
 
-  // Configure ultrasonic sensor pins.
-  pinMode(trigPin, OUTPUT);
-  pinMode(echoPin, INPUT);
+  // Configure ultrasonic sensors.
+  pinMode(frontTrigPin, OUTPUT);
+  pinMode(frontEchoPin, INPUT);
 
-  // Ensure the trigger starts LOW.
-  digitalWrite(trigPin, LOW);
+  pinMode(leftTrigPin, OUTPUT);
+  pinMode(leftEchoPin, INPUT);
 
-  // Initialize serial communication for debugging.
+  // Start with both trigger pins LOW.
+  digitalWrite(frontTrigPin, LOW);
+  digitalWrite(leftTrigPin, LOW);
+
+  // Initialize Serial Monitor.
   Serial.begin(9600);
 
-  // Ensure robot starts stationary.
+  // Ensure the robot starts stationary.
   setMotors(0, 0);
 
-  
-
-  Serial.println("Autonomous Follow Me robot ready!");
+  Serial.println("Wall-following robot ready!");
 }
 
 
@@ -110,28 +114,19 @@ void setup() {
 // ==========================================
 
 /*
- * Controls both motors independently.
- *
- * Positive values = forward
- * Negative values = backward
+ * Positive = forward
+ * Negative = backward
  * Zero = stop
  *
- * Valid range: -255 to 255
- *
- * Motor B direction is configured for
- * our existing robot wiring.
+ * Motor directions match our existing wiring.
  */
 
 void setMotors(int leftSpeed, int rightSpeed) {
 
-  // Restrict speeds to valid PWM values.
   leftSpeed = constrain(leftSpeed, -255, 255);
   rightSpeed = constrain(rightSpeed, -255, 255);
 
-  // ------------------------------------------
-  // LEFT MOTOR (Motor A)
-  // ------------------------------------------
-
+  // LEFT MOTOR
   if (leftSpeed > 0) {
     digitalWrite(in1, LOW);
     digitalWrite(in2, HIGH);
@@ -145,10 +140,7 @@ void setMotors(int leftSpeed, int rightSpeed) {
     digitalWrite(in2, LOW);
   }
 
-  // ------------------------------------------
-  // RIGHT MOTOR (Motor B)
-  // ------------------------------------------
-
+  // RIGHT MOTOR
   if (rightSpeed > 0) {
     digitalWrite(in3, LOW);
     digitalWrite(in4, HIGH);
@@ -172,92 +164,72 @@ void setMotors(int leftSpeed, int rightSpeed) {
 // ULTRASONIC DISTANCE MEASUREMENT
 // ==========================================
 
-/*
- * Measures the distance to an object.
- *
- * Returns:
- * - Distance in centimetres
- * - -1 if no valid echo is detected
- */
+float measureDistance(int trigPin, int echoPin) {
 
-float measureDistance() {
-
-  // Prepare the sensor for a measurement.
+  // Prepare sensor.
   digitalWrite(trigPin, LOW);
   delayMicroseconds(2);
 
-  // Send a 10-microsecond ultrasonic pulse.
+  // Send ultrasonic pulse.
   digitalWrite(trigPin, HIGH);
   delayMicroseconds(10);
   digitalWrite(trigPin, LOW);
 
-  // Measure how long the echo takes to return.
+  // Measure returning echo.
   long duration = pulseIn(echoPin, HIGH, 30000);
 
-  // No echo detected.
+  // Return -1 if no echo was detected.
   if (duration == 0) {
     return -1;
   }
 
-  // Convert duration into centimetres.
-  // Divide by 2 for the round-trip distance.
+  // Convert duration to centimetres.
   return duration * 0.0343 / 2.0;
 }
 
 
 // ==========================================
-// PROPORTIONAL CONTROLLER
+// WALL-FOLLOWING CONTROLLER
 // ==========================================
 
-/*
- * Adjusts the robot's movement according to
- * its distance from the detected object.
- *
- * Too far  -> Move forward
- * Too close -> Move backward
- * At target -> Stop
- */
+void updateWallFollowing() {
 
-
-void updateFollowMe() {
-
-  // Stop if no valid distance is detected.
-  if (distance < 0) {
+  // Stop if either sensor has no valid reading.
+  if (frontDistance < 0 || leftDistance < 0) {
     setMotors(0, 0);
     return;
   }
 
-  // Calculate the distance error.
-  float error = distance - targetDistance;
+  // Stop when an obstacle is directly ahead.
+  if (frontDistance <= frontStopDistance) {
+    setMotors(0, 0);
+    return;
+  }
 
-  // Stop when within the acceptable range.
+  // Calculate distance error from left wall.
+  float error = leftDistance - targetWallDistance;
+
+  // Ignore small corrections near target.
   if (abs(error) <= distanceTolerance) {
-    setMotors(0, 0);
-    return;
+    error = 0;
   }
 
-  // Calculate motor speed using proportional control.
-  int speed = constrain(
+  // Calculate proportional steering correction.
+  int correction = constrain(
     (int)(Kp * error),
-    -maxMotorSpeed,
-    maxMotorSpeed
+    -maxCorrection,
+    maxCorrection
   );
 
-  // Ensure enough power to physically move the motors.
-  if (speed > 0 && speed < minMotorSpeed) {
-    speed = minMotorSpeed;
-  }
-  else if (speed < 0 && speed > -minMotorSpeed) {
-    speed = -minMotorSpeed;
-  }
+  // Adjust individual motor speeds.
+  // Too far from wall -> steer left.
+  // Too close to wall -> steer right.
+  int leftSpeed = baseSpeed - correction;
+  int rightSpeed = baseSpeed + correction;
 
-  // Apply the calculated speed to both wheels.
-  setMotors(speed, speed);
-
-  Serial.print("Motor PWM: ");
-  Serial.println(speed);
+  // Apply calculated wheel speeds.
+  setMotors(leftSpeed, rightSpeed);
 }
-
 
 
 // ==========================================
@@ -266,21 +238,40 @@ void updateFollowMe() {
 
 void loop() {
 
-  // Only update the sensor every 100 ms.
+  // Update sensor readings approximately
+  // every 100 milliseconds.
   if (millis() - lastSensorTime >= SENSOR_INTERVAL) {
 
-    // Read the current distance.
-    distance = measureDistance();
+    // Measure front-facing distance.
+    frontDistance = measureDistance(
+      frontTrigPin,
+      frontEchoPin
+    );
 
-    // Calculate and apply motor speeds.
-    updateFollowMe();
+    // Allow echoes to settle before
+    // triggering the second sensor.
+    delay(30);
 
-    // Print distance for debugging.
-    Serial.print("Distance: ");
-    Serial.print(distance);
+    // Measure left-facing distance.
+    leftDistance = measureDistance(
+      leftTrigPin,
+      leftEchoPin
+    );
+
+    // Update autonomous steering.
+    updateWallFollowing();
+
+    // ------------------------------------------
+    // SERIAL MONITOR OUTPUT
+    // ------------------------------------------
+
+    Serial.print("Front: ");
+    Serial.print(frontDistance);
+    Serial.print(" cm | Left: ");
+    Serial.print(leftDistance);
     Serial.println(" cm");
 
-    // Record the measurement time.
+    // Record measurement time.
     lastSensorTime = millis();
   }
 }
