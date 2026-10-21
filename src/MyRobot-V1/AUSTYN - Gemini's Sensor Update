@@ -1,0 +1,282 @@
+/*
+ * COGS 300 - Lab 03: Robot Movement & Autonomous Control
+ * 
+ * Features:
+ * - Original Motor Controller & Serial Communication preserved
+ * - Ultrasonic Sensor Integration (Trigger: Pin 2, Echo: Pin 3)
+ * - Task 3: P-Controller Object Distance Maintenance (25 cm set point)
+ * - Task 4: Autonomous Wall Following & Corner Navigation
+ */
+
+// ==========================================
+// MOTOR PIN CONFIGURATION (UNCHANGED)
+// ==========================================
+
+// Motor A (Left Wheel)
+const int enA = 5;   // PWM speed control
+const int in1 = 6;   // Direction pin 1
+const int in2 = 7;   // Direction pin 2
+
+// Motor B (Right Wheel)
+const int enB = 9;   // PWM speed control
+const int in3 = 10;  // Direction pin 1
+const int in4 = 11;  // Direction pin 2
+
+// ==========================================
+// ULTRASONIC SENSOR PIN CONFIGURATION
+// ==========================================
+const int trigPin = 2;
+const int echoPin = 3;
+
+// ==========================================
+// OPERATING MODES & CONTROL VARIABLES
+// ==========================================
+// Toggle this to switch between Processing serial control and autonomous modes:
+// 0 = Serial Control (Original behavior)
+// 1 = P-Controller Object Tracker (Maintain 25 cm)
+// 2 = Autonomous Wall Follower
+int operatingMode = 0; 
+
+// Buffer for incoming serial commands.
+String inputBuffer = "";
+
+// Track the time of the last valid command.
+unsigned long lastCommandTime = 0;
+
+// Stop motors if no command is received for 500 ms (in serial mode).
+const unsigned long COMMAND_TIMEOUT = 500;
+
+
+// ==========================================
+// SETUP
+// ==========================================
+
+void setup() {
+  // Configure motor pins as outputs.
+  pinMode(enA, OUTPUT);
+  pinMode(in1, OUTPUT);
+  pinMode(in2, OUTPUT);
+
+  pinMode(enB, OUTPUT);
+  pinMode(in3, OUTPUT);
+  pinMode(in4, OUTPUT);
+
+  // Configure ultrasonic sensor pins.
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+
+  // Initialize serial communication.
+  Serial.begin(9600);
+
+  // Ensure the robot starts stationary.
+  setMotors(0, 0);
+
+  lastCommandTime = millis();
+
+  Serial.println("Arduino robot controller ready.");
+}
+
+
+// ==========================================
+// MOTOR CONTROL (UNCHANGED)
+// ==========================================
+
+void setMotors(int leftSpeed, int rightSpeed) {
+  // Restrict speeds to valid PWM values.
+  leftSpeed = constrain(leftSpeed, -255, 255);
+  rightSpeed = constrain(rightSpeed, -255, 255);
+
+  // LEFT MOTOR (Motor A)
+  if (leftSpeed > 0) {
+    digitalWrite(in1, LOW);
+    digitalWrite(in2, HIGH);
+  }
+  else if (leftSpeed < 0) {
+    digitalWrite(in1, HIGH);
+    digitalWrite(in2, LOW);
+  }
+  else {
+    digitalWrite(in1, LOW);
+    digitalWrite(in2, LOW);
+  }
+
+  // RIGHT MOTOR (Motor B - Reversed wiring)
+  if (rightSpeed > 0) {
+    digitalWrite(in3, LOW);
+    digitalWrite(in4, HIGH);
+  }
+  else if (rightSpeed < 0) {
+    digitalWrite(in3, HIGH);
+    digitalWrite(in4, LOW);
+  }
+  else {
+    digitalWrite(in3, LOW);
+    digitalWrite(in4, LOW);
+  }
+
+  // Apply PWM speeds.
+  analogWrite(enA, abs(leftSpeed));
+  analogWrite(enB, abs(rightSpeed));
+}
+
+
+// ==========================================
+// ULTRASONIC SENSOR HELPER
+// ==========================================
+
+long readDistanceCM() {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin , HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+
+  // Read echo pulse (timeout set to 30ms ~ 5 meters max range)
+  long duration = pulseIn(echoPin, HIGH, 30000);
+  if (duration == 0) {
+    return 200; // Default fallback if out of range
+  }
+  long cm = duration * 0.034 / 2;
+  return cm;
+}
+
+
+// ==========================================
+// TASK 3: P-CONTROLLER OBJECT TRACKER
+// ==========================================
+
+void runPControllerTracker() {
+  float set_point = 25.0; // Target distance in cm
+  float p_gain = 6.5;     // Proportional tuning gain (adjust based on motor response)
+
+  float measurement = (float)readDistanceCM();
+  
+  // Implements requested formula:
+  float error = measurement - set_point; 
+  float output = p_gain * error;         
+
+  // Negative output = backwards, Positive output = forwards
+  int motorSpeed = constrain((int)output, -255, 255);
+
+  // Drive both wheels equally to approach or retreat from the object
+  setMotors(motorSpeed, motorSpeed);
+  
+  delay(50); // Stability delay
+}
+
+
+// ==========================================
+// TASK 4: WALL FOLLOWER & CORNER NAVIGATION
+// ==========================================
+// Assumes the ultrasonic sensor is mounted facing the RIGHT side of the robot.
+
+void runWallFollower() {
+  float target_distance = 15.0; // Desired distance from the right wall (cm)
+  float base_speed = 140;       // Forward cruising speed
+  float kp = 4.0;               // Steering sensitivity
+
+  long current_distance = readDistanceCM();
+
+  // --- Corner Handling Cases ---
+  
+  // 1. INSIDE CORNER (Wall appears directly or very close ahead / sudden drop in distance)
+  if (current_distance < 8.0) {
+    // Pivot sharply away from the wall (turn left in place)
+    setMotors(-120, 160);
+    delay(200);
+    return;
+  }
+
+  // 2. OUTSIDE CORNER (Wall suddenly disappears / distance spikes)
+  if (current_distance > 40.0) {
+    // Sweep gently toward the wall to reacquire it
+    setMotors(160, 100);
+    delay(150);
+    return;
+  }
+
+  // 3. STRAIGHT WALL & GRADUAL CORNERS (P-Controller Steering)
+  float error = (float)(current_distance - target_distance);
+  int correction = (int)(kp * error);
+
+  // If too close to wall, steer left (increase left speed, decrease right speed)
+  // If too far from wall, steer right (decrease left speed, increase right speed)
+  int leftSpeed  = base_speed + correction;
+  int rightSpeed = base_speed - correction;
+
+  setMotors(leftSpeed, rightSpeed);
+  delay(40);
+}
+
+
+// ==========================================
+// SERIAL COMMAND PROCESSING (UNCHANGED)
+// ==========================================
+
+void processCommand(String command) {
+  // Allow switching modes via serial command if desired (e.g., typing "MODE,1" or "MODE,2")
+  if (command.startsWith("MODE,")) {
+    operatingMode = command.substring(5).toInt();
+    setMotors(0, 0);
+    Serial.print("Switched to operating mode: ");
+    Serial.println(operatingMode);
+    return;
+  }
+
+  int commaIndex = command.indexOf(',');
+  if (commaIndex <= 0) {
+    return;
+  }
+
+  String leftText = command.substring(0, commaIndex);
+  String rightText = command.substring(commaIndex + 1);
+
+  int leftSpeed = leftText.toInt();
+  int rightSpeed = rightText.toInt();
+
+  // Only apply serial speeds if we are in serial mode (Mode 0)
+  if (operatingMode == 0) {
+    setMotors(leftSpeed, rightSpeed);
+  }
+
+  lastCommandTime = millis();
+}
+
+
+// ==========================================
+// MAIN LOOP
+// ==========================================
+
+void loop() {
+  // Read incoming serial characters.
+  while (Serial.available() > 0) {
+    char incoming = Serial.read();
+
+    if (incoming == '\n') {
+      processCommand(inputBuffer);
+      inputBuffer = "";
+    }
+    else if (incoming != '\r') {
+      if (inputBuffer.length() < 32) {
+        inputBuffer += incoming;
+      }
+      else {
+        inputBuffer = "";
+      }
+    }
+  }
+
+  // Execute behavior based on the active operating mode
+  if (operatingMode == 1) {
+    runPControllerTracker();
+  } 
+  else if (operatingMode == 2) {
+    runWallFollower();
+  } 
+  else {
+    // Mode 0: Communication Safety Timeout
+    if (millis() - lastCommandTime > COMMAND_TIMEOUT) {
+      setMotors(0, 0);
+    }
+  }
+}
