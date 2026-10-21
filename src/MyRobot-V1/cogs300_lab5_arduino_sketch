@@ -1,0 +1,286 @@
+
+/*
+ * COGS 300 - Lab 05: Autonomous Follow Me Robot
+ *
+ * Uses an HC-SR04 ultrasonic sensor to maintain
+ * a target distance from an object.
+ *
+ * Features:
+ * - Autonomous forward/backward movement
+ * - Proportional controller (P-controller)
+ * - Ultrasonic distance measurement
+ * - Automatic stopping near target distance
+ * - Stops when no valid echo is detected
+ * - Serial distance and motor speed reporting
+ *
+ * No Processing commands are required.
+ */
+
+
+// ==========================================
+// MOTOR PIN CONFIGURATION
+// ==========================================
+
+// Motor A (Left Wheel)
+const int enA = 5;
+const int in1 = 6;
+const int in2 = 7;
+
+// Motor B (Right Wheel)
+const int enB = 9;
+const int in3 = 10;
+const int in4 = 11;
+
+
+// ==========================================
+// ULTRASONIC SENSOR CONFIGURATION
+// ==========================================
+
+// HC-SR04 sensor pins.
+const int trigPin = 2;
+const int echoPin = 3;
+
+// Most recent distance measurement in cm.
+// -1 means no valid echo was detected.
+float distance = -1;
+
+// Track the last sensor measurement.
+unsigned long lastSensorTime = 0;
+
+// Measure distance every 100 milliseconds.
+const unsigned long SENSOR_INTERVAL = 100;
+
+
+// ==========================================
+// FOLLOW ME CONTROLLER CONFIGURATION
+// ==========================================
+
+// Desired distance from the detected object (cm).
+const float targetDistance = 15.0;
+
+// Proportional gain.
+// Higher values produce stronger corrections.
+const float Kp = 5.0;
+
+// Allow a small tolerance around the target.
+// Robot stops within +/- 2 cm of target.
+const float distanceTolerance = 2.0;
+
+// Maximum allowed motor speed (PWM).
+const int minMotorSpeed = 90;
+const int maxMotorSpeed = 180;
+
+
+// ==========================================
+// SETUP
+// ==========================================
+
+void setup() {
+
+  // Configure motor pins as outputs.
+  pinMode(enA, OUTPUT);
+  pinMode(in1, OUTPUT);
+  pinMode(in2, OUTPUT);
+
+  pinMode(enB, OUTPUT);
+  pinMode(in3, OUTPUT);
+  pinMode(in4, OUTPUT);
+
+  // Configure ultrasonic sensor pins.
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+
+  // Ensure the trigger starts LOW.
+  digitalWrite(trigPin, LOW);
+
+  // Initialize serial communication for debugging.
+  Serial.begin(9600);
+
+  // Ensure robot starts stationary.
+  setMotors(0, 0);
+
+  
+
+  Serial.println("Autonomous Follow Me robot ready!");
+}
+
+
+// ==========================================
+// MOTOR CONTROL
+// ==========================================
+
+/*
+ * Controls both motors independently.
+ *
+ * Positive values = forward
+ * Negative values = backward
+ * Zero = stop
+ *
+ * Valid range: -255 to 255
+ *
+ * Motor B direction is configured for
+ * our existing robot wiring.
+ */
+
+void setMotors(int leftSpeed, int rightSpeed) {
+
+  // Restrict speeds to valid PWM values.
+  leftSpeed = constrain(leftSpeed, -255, 255);
+  rightSpeed = constrain(rightSpeed, -255, 255);
+
+  // ------------------------------------------
+  // LEFT MOTOR (Motor A)
+  // ------------------------------------------
+
+  if (leftSpeed > 0) {
+    digitalWrite(in1, LOW);
+    digitalWrite(in2, HIGH);
+  }
+  else if (leftSpeed < 0) {
+    digitalWrite(in1, HIGH);
+    digitalWrite(in2, LOW);
+  }
+  else {
+    digitalWrite(in1, LOW);
+    digitalWrite(in2, LOW);
+  }
+
+  // ------------------------------------------
+  // RIGHT MOTOR (Motor B)
+  // ------------------------------------------
+
+  if (rightSpeed > 0) {
+    digitalWrite(in3, LOW);
+    digitalWrite(in4, HIGH);
+  }
+  else if (rightSpeed < 0) {
+    digitalWrite(in3, HIGH);
+    digitalWrite(in4, LOW);
+  }
+  else {
+    digitalWrite(in3, LOW);
+    digitalWrite(in4, LOW);
+  }
+
+  // Apply PWM speeds.
+  analogWrite(enA, abs(leftSpeed));
+  analogWrite(enB, abs(rightSpeed));
+}
+
+
+// ==========================================
+// ULTRASONIC DISTANCE MEASUREMENT
+// ==========================================
+
+/*
+ * Measures the distance to an object.
+ *
+ * Returns:
+ * - Distance in centimetres
+ * - -1 if no valid echo is detected
+ */
+
+float measureDistance() {
+
+  // Prepare the sensor for a measurement.
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+
+  // Send a 10-microsecond ultrasonic pulse.
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+
+  // Measure how long the echo takes to return.
+  long duration = pulseIn(echoPin, HIGH, 30000);
+
+  // No echo detected.
+  if (duration == 0) {
+    return -1;
+  }
+
+  // Convert duration into centimetres.
+  // Divide by 2 for the round-trip distance.
+  return duration * 0.0343 / 2.0;
+}
+
+
+// ==========================================
+// PROPORTIONAL CONTROLLER
+// ==========================================
+
+/*
+ * Adjusts the robot's movement according to
+ * its distance from the detected object.
+ *
+ * Too far  -> Move forward
+ * Too close -> Move backward
+ * At target -> Stop
+ */
+
+
+void updateFollowMe() {
+
+  // Stop if no valid distance is detected.
+  if (distance < 0) {
+    setMotors(0, 0);
+    return;
+  }
+
+  // Calculate the distance error.
+  float error = distance - targetDistance;
+
+  // Stop when within the acceptable range.
+  if (abs(error) <= distanceTolerance) {
+    setMotors(0, 0);
+    return;
+  }
+
+  // Calculate motor speed using proportional control.
+  int speed = constrain(
+    (int)(Kp * error),
+    -maxMotorSpeed,
+    maxMotorSpeed
+  );
+
+  // Ensure enough power to physically move the motors.
+  if (speed > 0 && speed < minMotorSpeed) {
+    speed = minMotorSpeed;
+  }
+  else if (speed < 0 && speed > -minMotorSpeed) {
+    speed = -minMotorSpeed;
+  }
+
+  // Apply the calculated speed to both wheels.
+  setMotors(speed, speed);
+
+  Serial.print("Motor PWM: ");
+  Serial.println(speed);
+}
+
+
+
+// ==========================================
+// MAIN LOOP
+// ==========================================
+
+void loop() {
+
+  // Only update the sensor every 100 ms.
+  if (millis() - lastSensorTime >= SENSOR_INTERVAL) {
+
+    // Read the current distance.
+    distance = measureDistance();
+
+    // Calculate and apply motor speeds.
+    updateFollowMe();
+
+    // Print distance for debugging.
+    Serial.print("Distance: ");
+    Serial.print(distance);
+    Serial.println(" cm");
+
+    // Record the measurement time.
+    lastSensorTime = millis();
+  }
+}
