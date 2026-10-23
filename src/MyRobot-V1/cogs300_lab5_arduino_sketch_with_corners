@@ -7,15 +7,17 @@
  * - Left ultrasonic sensor for wall following.
  * - Proportional controller for maintaining wall distance.
  * - Automatic right turns when encountering inside corners.
+ * - Continues straight when the left wall disappears.
  * - Handles missing front sensor echoes (-1).
  * - Safety timeout for turning.
  *
  * Current implementation:
  * 1. Straight wall following
- * 2. Gradual steering corrections
- * 3. Inside-corner navigation
+ * 2. Gradual corners
+ * 3. Inside corners
+ * 4. Continuing straight when the left wall disappears
  *
- * Outside-corner navigation will be added later.
+ * Outside-corner turning is not implemented.
  */
 
 // ==========================================
@@ -72,18 +74,28 @@ const float distanceTolerance = 2.0;
 // Maximum steering correction.
 const int maxCorrection = 80;
 
+// NEW:
+// Maximum distance at which we consider
+// the left wall close enough to follow.
+//
+// If the left sensor detects something farther
+// than 35 cm, the robot will continue straight.
+const float maxWallFollowDistance = 35.0;
+
 // ==========================================
 // INSIDE-CORNER CONFIGURATION
 // ==========================================
 
-// Begin turning right when a wall is within 20 cm.
+// Begin turning right when an obstacle
+// is detected within 20 cm.
 const float frontStopDistance = 20.0;
 
-// Finish turning when the front path appears clear.
+// Finish turning when the front path
+// appears clear by at least 30 cm.
 const float frontClearDistance = 30.0;
 
 // Turning speed.
-// Set to 230 based on our successful testing.
+// Preserving your current tested value.
 const int turnSpeed = 220;
 
 // Maximum allowed turning duration (milliseconds).
@@ -102,12 +114,15 @@ int clearReadingCount = 0;
 
 /*
  * FOLLOW_WALL:
- *   Move forward while maintaining distance
- *   from the wall on the robot's left.
+ *   Follow the left wall using proportional
+ *   steering corrections.
+ *
+ *   If the left wall disappears, continue
+ *   moving straight.
  *
  * TURN_RIGHT:
  *   Rotate clockwise until the front path
- *   appears clear.
+ *   appears sufficiently clear.
  *
  * STOPPED:
  *   Stop if a turning manoeuvre times out.
@@ -160,6 +175,7 @@ void setup() {
 
   Serial.println("Wall-following robot ready!");
   Serial.println("Inside-corner navigation enabled.");
+  Serial.println("Continue-straight behaviour enabled.");
 }
 
 // ==========================================
@@ -271,39 +287,48 @@ float measureDistance(int trigPin, int echoPin) {
 }
 
 // ==========================================
-// WALL-FOLLOWING CONTROLLER
+// WALL-FOLLOWING CONTROLLER (UPDATED)
 // ==========================================
 
 void updateWallFollowing() {
 
+  // ------------------------------------------
+  // 1. CHECK WHETHER THE LEFT WALL IS MISSING
+  // ------------------------------------------
+
   /*
-   * The left sensor is essential for wall following.
+   * NEW BEHAVIOUR:
    *
    * If the left sensor cannot detect a wall,
-   * stop rather than make an uncontrolled
-   * steering correction.
+   * or the detected wall is too far away,
+   * continue moving straight.
+   *
+   * This prevents the robot from stopping
+   * or making aggressive steering corrections
+   * when it reaches the end of a wall.
    */
 
-  if (leftDistance < 0) {
+  if (leftDistance < 0 ||
+      leftDistance > maxWallFollowDistance) {
 
-    setMotors(0, 0);
+    // Both wheels move forward at the same speed.
+    setMotors(baseSpeed, baseSpeed);
 
-    Serial.println("Left sensor invalid. Waiting for wall.");
+    Serial.println("Left wall lost. Continuing straight.");
 
     return;
   }
 
+  // ------------------------------------------
+  // 2. CALCULATE WALL DISTANCE ERROR
+  // ------------------------------------------
+
   /*
-   * IMPORTANT CHANGE:
-   *
-   * We no longer stop just because the
-   * FRONT sensor reports -1.
-   *
-   * The front sensor is handled separately
-   * by our navigation controller.
+   * If the left wall is detected within
+   * our acceptable range, continue using
+   * the proportional controller.
    */
 
-  // Calculate error from desired wall distance.
   float error = leftDistance - targetWallDistance;
 
   // Ignore small errors within tolerance.
@@ -311,16 +336,21 @@ void updateWallFollowing() {
     error = 0;
   }
 
-  // Calculate proportional steering correction.
+  // ------------------------------------------
+  // 3. CALCULATE STEERING CORRECTION
+  // ------------------------------------------
+
   int correction = constrain(
     (int)(Kp * error),
     -maxCorrection,
     maxCorrection
   );
 
+  // ------------------------------------------
+  // 4. ADJUST MOTOR SPEEDS
+  // ------------------------------------------
+
   /*
-   * Adjust individual motor speeds.
-   *
    * Too far from wall:
    *   Left wheel slows down.
    *   Right wheel speeds up.
@@ -448,25 +478,13 @@ void updateNavigation() {
     case FOLLOW_WALL:
 
       /*
-       * IMPORTANT CHANGE:
+       * Priority 1:
        *
-       * Previously:
+       * Check for an inside corner using
+       * the front ultrasonic sensor.
        *
-       * if (frontDistance < 0) {
-       *   setMotors(0, 0);
-       *   break;
-       * }
-       *
-       * This caused the robot to stop
-       * whenever the front sensor returned -1.
-       *
-       * We have removed that condition.
-       */
-
-      /*
-       * Only trigger a right turn if the
-       * front sensor has a VALID reading
-       * indicating an obstacle nearby.
+       * Only trigger a turn if the sensor
+       * reports a VALID nearby obstacle.
        */
 
       if (frontDistance >= 0 &&
@@ -489,11 +507,17 @@ void updateNavigation() {
       else {
 
         /*
-         * Otherwise, continue following
-         * the left wall.
+         * Priority 2:
          *
-         * This includes situations where
-         * frontDistance == -1.
+         * Continue following the left wall.
+         *
+         * If the left wall disappears,
+         * updateWallFollowing() will instead
+         * command both wheels to move forward
+         * at the same speed.
+         *
+         * A missing front echo (-1) does not
+         * automatically stop the robot.
          */
 
         updateWallFollowing();
