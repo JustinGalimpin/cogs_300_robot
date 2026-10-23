@@ -1,0 +1,608 @@
+/*
+ * COGS 300 - Lab 05
+ * Autonomous Wall Following with Inside-Corner Navigation
+ *
+ * Features:
+ * - Front ultrasonic sensor for obstacle detection.
+ * - Left ultrasonic sensor for wall following.
+ * - Proportional controller for maintaining wall distance.
+ * - Automatic right turns when encountering inside corners.
+ * - Handles missing front sensor echoes (-1).
+ * - Safety timeout for turning.
+ *
+ * Current implementation:
+ * 1. Straight wall following
+ * 2. Gradual steering corrections
+ * 3. Inside-corner navigation
+ *
+ * Outside-corner navigation will be added later.
+ */
+
+// ==========================================
+// MOTOR PIN CONFIGURATION
+// ==========================================
+
+// Motor A (Left Wheel)
+const int enA = 5;
+const int in1 = 6;
+const int in2 = 7;
+
+// Motor B (Right Wheel)
+const int enB = 9;
+const int in3 = 10;
+const int in4 = 11;
+
+// ==========================================
+// ULTRASONIC SENSOR CONFIGURATION
+// ==========================================
+
+// Front-facing ultrasonic sensor.
+const int frontTrigPin = 2;
+const int frontEchoPin = 3;
+
+// Left-facing ultrasonic sensor.
+const int leftTrigPin = 13;
+const int leftEchoPin = 12;
+
+// Store the most recent distance measurements.
+// -1 means the sensor did not receive a valid echo.
+float frontDistance = -1;
+float leftDistance = -1;
+
+// Time between sensor measurement cycles.
+unsigned long lastSensorTime = 0;
+const unsigned long SENSOR_INTERVAL = 100;
+
+// ==========================================
+// WALL-FOLLOWING CONFIGURATION
+// ==========================================
+
+// Desired distance from the left wall (cm).
+const float targetWallDistance = 15.0;
+
+// Normal forward motor speed (PWM).
+const int baseSpeed = 190;
+
+// Proportional gain for steering corrections.
+const float Kp = 3.0;
+
+// Ignore small distance errors (+/- 2 cm).
+const float distanceTolerance = 2.0;
+
+// Maximum steering correction.
+const int maxCorrection = 80;
+
+// ==========================================
+// INSIDE-CORNER CONFIGURATION
+// ==========================================
+
+// Begin turning right when a wall is within 20 cm.
+const float frontStopDistance = 20.0;
+
+// Finish turning when the front path appears clear.
+const float frontClearDistance = 30.0;
+
+// Turning speed.
+// Set to 230 based on our successful testing.
+const int turnSpeed = 220;
+
+// Maximum allowed turning duration (milliseconds).
+const unsigned long maxTurnDuration = 5000;
+
+// Number of consecutive clear readings required
+// before completing a right turn.
+const int requiredClearReadings = 3;
+
+// Track consecutive clear readings.
+int clearReadingCount = 0;
+
+// ==========================================
+// NAVIGATION STATES
+// ==========================================
+
+/*
+ * FOLLOW_WALL:
+ *   Move forward while maintaining distance
+ *   from the wall on the robot's left.
+ *
+ * TURN_RIGHT:
+ *   Rotate clockwise until the front path
+ *   appears clear.
+ *
+ * STOPPED:
+ *   Stop if a turning manoeuvre times out.
+ */
+
+enum RobotState {
+  FOLLOW_WALL,
+  TURN_RIGHT,
+  STOPPED
+};
+
+// Start in normal wall-following mode.
+RobotState currentState = FOLLOW_WALL;
+
+// Record when a right turn begins.
+unsigned long turnStartTime = 0;
+
+// ==========================================
+// SETUP
+// ==========================================
+
+void setup() {
+
+  // Configure motor pins.
+  pinMode(enA, OUTPUT);
+  pinMode(in1, OUTPUT);
+  pinMode(in2, OUTPUT);
+
+  pinMode(enB, OUTPUT);
+  pinMode(in3, OUTPUT);
+  pinMode(in4, OUTPUT);
+
+  // Configure front ultrasonic sensor.
+  pinMode(frontTrigPin, OUTPUT);
+  pinMode(frontEchoPin, INPUT);
+
+  // Configure left ultrasonic sensor.
+  pinMode(leftTrigPin, OUTPUT);
+  pinMode(leftEchoPin, INPUT);
+
+  // Ensure both trigger pins start LOW.
+  digitalWrite(frontTrigPin, LOW);
+  digitalWrite(leftTrigPin, LOW);
+
+  // Initialize Serial Monitor.
+  Serial.begin(9600);
+
+  // Ensure robot starts stationary.
+  setMotors(0, 0);
+
+  Serial.println("Wall-following robot ready!");
+  Serial.println("Inside-corner navigation enabled.");
+}
+
+// ==========================================
+// MOTOR CONTROL
+// ==========================================
+
+/*
+ * Controls both motors independently.
+ *
+ * Positive speed = forward
+ * Negative speed = backward
+ * Zero = stop
+ *
+ * Motor directions match our existing robot.
+ */
+
+void setMotors(int leftSpeed, int rightSpeed) {
+
+  // Restrict speeds to valid PWM values.
+  leftSpeed = constrain(leftSpeed, -255, 255);
+  rightSpeed = constrain(rightSpeed, -255, 255);
+
+  // ------------------------------------------
+  // LEFT MOTOR
+  // ------------------------------------------
+
+  if (leftSpeed > 0) {
+
+    digitalWrite(in1, LOW);
+    digitalWrite(in2, HIGH);
+
+  }
+  else if (leftSpeed < 0) {
+
+    digitalWrite(in1, HIGH);
+    digitalWrite(in2, LOW);
+
+  }
+  else {
+
+    digitalWrite(in1, LOW);
+    digitalWrite(in2, LOW);
+  }
+
+  // ------------------------------------------
+  // RIGHT MOTOR
+  // ------------------------------------------
+
+  if (rightSpeed > 0) {
+
+    digitalWrite(in3, LOW);
+    digitalWrite(in4, HIGH);
+
+  }
+  else if (rightSpeed < 0) {
+
+    digitalWrite(in3, HIGH);
+    digitalWrite(in4, LOW);
+
+  }
+  else {
+
+    digitalWrite(in3, LOW);
+    digitalWrite(in4, LOW);
+  }
+
+  // Apply PWM speeds.
+  analogWrite(enA, abs(leftSpeed));
+  analogWrite(enB, abs(rightSpeed));
+}
+
+// ==========================================
+// ULTRASONIC DISTANCE MEASUREMENT
+// ==========================================
+
+/*
+ * Measures distance using either sensor.
+ *
+ * Parameters:
+ * trigPin - Sensor trigger pin
+ * echoPin - Sensor echo pin
+ *
+ * Returns:
+ * - Distance in centimetres
+ * - -1 if no valid echo was detected
+ */
+
+float measureDistance(int trigPin, int echoPin) {
+
+  // Ensure trigger starts LOW.
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+
+  // Send a 10-microsecond pulse.
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+
+  // Measure returning echo.
+  long duration = pulseIn(echoPin, HIGH, 30000);
+
+  // No echo detected.
+  if (duration == 0) {
+    return -1;
+  }
+
+  // Convert duration to centimetres.
+  return duration * 0.0343 / 2.0;
+}
+
+// ==========================================
+// WALL-FOLLOWING CONTROLLER
+// ==========================================
+
+void updateWallFollowing() {
+
+  /*
+   * The left sensor is essential for wall following.
+   *
+   * If the left sensor cannot detect a wall,
+   * stop rather than make an uncontrolled
+   * steering correction.
+   */
+
+  if (leftDistance < 0) {
+
+    setMotors(0, 0);
+
+    Serial.println("Left sensor invalid. Waiting for wall.");
+
+    return;
+  }
+
+  /*
+   * IMPORTANT CHANGE:
+   *
+   * We no longer stop just because the
+   * FRONT sensor reports -1.
+   *
+   * The front sensor is handled separately
+   * by our navigation controller.
+   */
+
+  // Calculate error from desired wall distance.
+  float error = leftDistance - targetWallDistance;
+
+  // Ignore small errors within tolerance.
+  if (abs(error) <= distanceTolerance) {
+    error = 0;
+  }
+
+  // Calculate proportional steering correction.
+  int correction = constrain(
+    (int)(Kp * error),
+    -maxCorrection,
+    maxCorrection
+  );
+
+  /*
+   * Adjust individual motor speeds.
+   *
+   * Too far from wall:
+   *   Left wheel slows down.
+   *   Right wheel speeds up.
+   *   Robot steers left.
+   *
+   * Too close to wall:
+   *   Left wheel speeds up.
+   *   Right wheel slows down.
+   *   Robot steers right.
+   */
+
+  int leftSpeed = baseSpeed - correction;
+  int rightSpeed = baseSpeed + correction;
+
+  // Apply calculated motor speeds.
+  setMotors(leftSpeed, rightSpeed);
+}
+
+// ==========================================
+// INSIDE-CORNER TURNING
+// ==========================================
+
+void updateRightTurn() {
+
+  // ------------------------------------------
+  // 1. CHECK TURN TIMEOUT
+  // ------------------------------------------
+
+  /*
+   * Prevent the robot from rotating
+   * indefinitely if it cannot complete
+   * the turn.
+   */
+
+  if (millis() - turnStartTime >= maxTurnDuration) {
+
+    setMotors(0, 0);
+
+    currentState = STOPPED;
+
+    Serial.println("Turn timeout! Robot stopped.");
+
+    return;
+  }
+
+  // ------------------------------------------
+  // 2. CHECK FRONT CLEARANCE
+  // ------------------------------------------
+
+  /*
+   * The front path is considered potentially
+   * clear when:
+   *
+   * 1. The sensor detects an object at least
+   *    30 cm away.
+   *
+   * OR
+   *
+   * 2. The sensor returns -1 because no
+   *    valid echo was detected.
+   *
+   * We require multiple consecutive readings
+   * to reduce the effect of occasional
+   * measurement errors.
+   */
+
+  if (frontDistance >= frontClearDistance ||
+      frontDistance < 0) {
+
+    clearReadingCount++;
+
+  }
+  else {
+
+    // Obstacle still detected.
+    clearReadingCount = 0;
+  }
+
+  // ------------------------------------------
+  // 3. FINISH TURNING
+  // ------------------------------------------
+
+  if (clearReadingCount >= requiredClearReadings) {
+
+    // Stop rotation.
+    setMotors(0, 0);
+
+    // Reset clearance counter.
+    clearReadingCount = 0;
+
+    // Return to normal wall following.
+    currentState = FOLLOW_WALL;
+
+    Serial.println("Corner cleared! Resuming wall following.");
+
+    return;
+  }
+
+  // ------------------------------------------
+  // 4. CONTINUE ROTATING RIGHT
+  // ------------------------------------------
+
+  /*
+   * Rotate clockwise in place.
+   *
+   * Left wheel: forward
+   * Right wheel: backward
+   */
+
+  setMotors(turnSpeed, -turnSpeed);
+}
+
+// ==========================================
+// NAVIGATION CONTROLLER
+// ==========================================
+
+void updateNavigation() {
+
+  switch (currentState) {
+
+    // --------------------------------------
+    // FOLLOW WALL
+    // --------------------------------------
+
+    case FOLLOW_WALL:
+
+      /*
+       * IMPORTANT CHANGE:
+       *
+       * Previously:
+       *
+       * if (frontDistance < 0) {
+       *   setMotors(0, 0);
+       *   break;
+       * }
+       *
+       * This caused the robot to stop
+       * whenever the front sensor returned -1.
+       *
+       * We have removed that condition.
+       */
+
+      /*
+       * Only trigger a right turn if the
+       * front sensor has a VALID reading
+       * indicating an obstacle nearby.
+       */
+
+      if (frontDistance >= 0 &&
+          frontDistance <= frontStopDistance) {
+
+        // Switch to right-turning mode.
+        currentState = TURN_RIGHT;
+
+        // Record when turning begins.
+        turnStartTime = millis();
+
+        // Reset consecutive clearance count.
+        clearReadingCount = 0;
+
+        Serial.println("Inside corner detected! Turning right.");
+
+        // Begin turning immediately.
+        setMotors(turnSpeed, -turnSpeed);
+      }
+      else {
+
+        /*
+         * Otherwise, continue following
+         * the left wall.
+         *
+         * This includes situations where
+         * frontDistance == -1.
+         */
+
+        updateWallFollowing();
+      }
+
+      break;
+
+    // --------------------------------------
+    // TURN RIGHT
+    // --------------------------------------
+
+    case TURN_RIGHT:
+
+      updateRightTurn();
+
+      break;
+
+    // --------------------------------------
+    // STOPPED
+    // --------------------------------------
+
+    case STOPPED:
+
+      // Remain stationary until reset.
+      setMotors(0, 0);
+
+      break;
+  }
+}
+
+// ==========================================
+// MAIN LOOP
+// ==========================================
+
+void loop() {
+
+  // Update sensors approximately every 100 ms.
+  if (millis() - lastSensorTime >= SENSOR_INTERVAL) {
+
+    // --------------------------------------
+    // MEASURE FRONT SENSOR
+    // --------------------------------------
+
+    frontDistance = measureDistance(
+      frontTrigPin,
+      frontEchoPin
+    );
+
+    // Allow echoes to settle before
+    // measuring with the second sensor.
+    delay(30);
+
+    // --------------------------------------
+    // MEASURE LEFT SENSOR
+    // --------------------------------------
+
+    leftDistance = measureDistance(
+      leftTrigPin,
+      leftEchoPin
+    );
+
+    // --------------------------------------
+    // UPDATE ROBOT BEHAVIOUR
+    // --------------------------------------
+
+    updateNavigation();
+
+    // --------------------------------------
+    // SERIAL MONITOR OUTPUT
+    // --------------------------------------
+
+    Serial.print("Front: ");
+
+    if (frontDistance < 0) {
+      Serial.print("No echo");
+    }
+    else {
+      Serial.print(frontDistance);
+      Serial.print(" cm");
+    }
+
+    Serial.print(" | Left: ");
+
+    if (leftDistance < 0) {
+      Serial.print("No echo");
+    }
+    else {
+      Serial.print(leftDistance);
+      Serial.print(" cm");
+    }
+
+    Serial.print(" | State: ");
+
+    switch (currentState) {
+
+      case FOLLOW_WALL:
+        Serial.println("FOLLOW_WALL");
+        break;
+
+      case TURN_RIGHT:
+        Serial.println("TURN_RIGHT");
+        break;
+
+      case STOPPED:
+        Serial.println("STOPPED");
+        break;
+    }
+
+    // Record when this measurement cycle finished.
+    lastSensorTime = millis();
+  }
+}
