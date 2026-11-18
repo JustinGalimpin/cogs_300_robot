@@ -1,19 +1,24 @@
+// IR reading flags are defined in Sensors.ino, which Arduino concatenates later.
+extern bool leftOnLine;
+extern bool centerOnLine;
+extern bool rightOnLine;
+
 // Original Lab 7 line-following and recovery logic.
 // Only conflicting identifiers have been renamed.
 
 // Normal forward speed.
-const int lineBaseSpeed = 110;
+const int lineBaseSpeed = 100;
 
 // Strong steering correction.
-const int lineTurnSpeed = 125;
-const int lineSlowSpeed = 65;
+const int lineTurnSpeed = 105;
+const int lineSlowSpeed = 40;
 
 // Gentle steering correction.
-const int lineSlightFastSpeed = 115;
-const int lineSlightSlowSpeed = 85;
+const int lineSlightFastSpeed = 90;
+const int lineSlightSlowSpeed = 60;
 
 // Rotation speed during line recovery.
-const int lineSearchSpeed = 85;
+const int lineSearchSpeed = 65;
 
 // ==========================================
 // LINE RECOVERY CONFIGURATION
@@ -24,47 +29,31 @@ const int lineSearchSpeed = 85;
 //  1 = Last detected on right
 int lastDirection = 0;
 
-// Record when the robot first loses the tape.
-unsigned long lineLostTime = 0;
-
-// Continue forward briefly before searching.
-const unsigned long lineLostDelay = 100;
-
 // Track whether the line is currently lost.
 bool lineLost = false;
 
 // ==========================================
+// LINE RECOVERY
+// ==========================================
 
+/*
+ * If no IR sensor sees white tape, immediately rotate
+ * toward the last known side of the tape.
+ * This avoids overshooting sharp corners.
+ */
 void recoverLine() {
-
-  // Record when the tape first disappears.
   if (!lineLost) {
     lineLost = true;
-    lineLostTime = millis();
+    Serial.println("Line lost! Searching...");
   }
 
-  // Continue forward briefly to avoid
-  // reacting to momentary sensor loss.
-  if (millis() - lineLostTime < lineLostDelay) {
-
-    setMotors(lineBaseSpeed, lineBaseSpeed);
-    return;
-  }
-
-  // Search toward the last known tape location.
   if (lastDirection == -1) {
-
-    // Rotate left.
     setMotors(-lineSearchSpeed, lineSearchSpeed);
   }
   else if (lastDirection == 1) {
-
-    // Rotate right.
     setMotors(lineSearchSpeed, -lineSearchSpeed);
   }
   else {
-
-    // No known direction: stop safely.
     setMotors(0, 0);
   }
 }
@@ -171,7 +160,10 @@ void printLineSensorReadings() {
   Serial.print(rightOnLine);
 
   Serial.print(" | Last direction: ");
-  Serial.println(lastDirection);
+  Serial.print(lastDirection);
+
+  Serial.print(" | Line lost: ");
+  Serial.println(lineLost);
 }
 
 // ==========================================
