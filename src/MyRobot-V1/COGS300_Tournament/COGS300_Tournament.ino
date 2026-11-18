@@ -15,33 +15,13 @@ enum TournamentStage {
   FINISHED
 };
 
-// MANUAL CHANGING OF STAGE CODE FOR THE ROBOT
-// We'll eventually make this automatic
 // CHANGE THIS VALUE to test either of the existing navigation systems.
 TournamentStage currentStage = LINE_FOLLOWING;
 
 void setup() {
-  // Motor direction and PWM pins (shared by both navigation modes).
-  pinMode(enA, OUTPUT);
-  pinMode(in1, OUTPUT);
-  pinMode(in2, OUTPUT);
-  pinMode(enB, OUTPUT);
-  pinMode(in3, OUTPUT);
-  pinMode(in4, OUTPUT);
-
-  // Ultrasonic sensors (Lab 5).
-  pinMode(frontTrigPin, OUTPUT);
-  pinMode(frontEchoPin, INPUT);
-  pinMode(leftTrigPin, OUTPUT);
-  pinMode(leftEchoPin, INPUT);
-  digitalWrite(frontTrigPin, LOW);
-  digitalWrite(leftTrigPin, LOW);
-
-  // IR sensors (Lab 7): HIGH means white tape.
-  pinMode(leftIRPin, INPUT);
-  pinMode(centerIRPin, INPUT);
-  pinMode(rightIRPin, INPUT);
-
+  // Hardware setup lives with the shared motor/sensor implementations.
+  initializeMotors();
+  initializeSensors();
   Serial.begin(9600);
   setMotors(0, 0);
   Serial.println("COGS 300 tournament robot ready.");
@@ -63,20 +43,10 @@ void loop() {
       break;
     }
 
-    case WALL_FOLLOWING: {
-      // Preserve Lab 5's approximately 100 ms sensor cycle.
-      // Both ultrasonic readings are taken before navigation updates.
-      if (millis() - lastSensorTime >= SENSOR_INTERVAL) {
-        frontDistance = measureDistance(frontTrigPin, frontEchoPin);
-        delay(30); // Original Lab 5 inter-sensor settling delay.
-        leftDistance = measureDistance(leftTrigPin, leftEchoPin);
-
-        updateWallNavigation();
-        printWallSensorReadings();
-        lastSensorTime = millis();
-      }
+    case WALL_FOLLOWING:
+      // Lab 5's original timed sensor cycle is encapsulated in its own tab.
+      runWallFollowingCycle();
       break;
-    }
 
     case OBJECT_DETECTION:
     case FINISHED:
@@ -86,30 +56,3 @@ void loop() {
   }
 }
 
-// Original Lab 5 Serial Monitor output, extracted from its loop().
-void printWallSensorReadings() {
-  Serial.print("Front: ");
-  if (frontDistance < 0) {
-    Serial.print("No echo");
-  } else {
-    Serial.print(frontDistance);
-    Serial.print(" cm");
-  }
-
-  Serial.print(" | Left: ");
-  if (leftDistance < 0) {
-    Serial.print("No echo");
-  } else {
-    Serial.print(leftDistance);
-    Serial.print(" cm");
-  }
-
-  Serial.print(" | State: ");
-  switch (wallState) {
-    case FOLLOW_WALL: Serial.println("FOLLOW_WALL"); break;
-    case TURN_RIGHT: Serial.println("TURN_RIGHT"); break;
-    case ADVANCE_OUTSIDE: Serial.println("ADVANCE_OUTSIDE"); break;
-    case TURN_LEFT_OUTSIDE: Serial.println("TURN_LEFT_OUTSIDE"); break;
-    case STOPPED: Serial.println("STOPPED"); break;
-  }
-}
