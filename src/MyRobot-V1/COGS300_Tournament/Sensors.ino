@@ -24,8 +24,8 @@ const int centerIRPin = A1;
 const int rightIRPin = A2;
 
 // Confirmed calibration:
-// LOW = White tape
 // HIGH = Dark floor
+// LOW  = White tape
 const int WHITE_DETECTED = LOW;
 
 bool leftOnLine = false;
@@ -80,3 +80,16 @@ void readIRSensors() {
 }
 
 // ==========================================
+
+// Initialize both ultrasonic sensors and all three IR sensors.
+void initializeSensors() {
+  pinMode(frontTrigPin, OUTPUT);
+  pinMode(frontEchoPin, INPUT);
+  pinMode(leftTrigPin, OUTPUT);
+  pinMode(leftEchoPin, INPUT);
+  digitalWrite(frontTrigPin, LOW);
+  digitalWrite(leftTrigPin, LOW);
+  pinMode(leftIRPin, INPUT);
+  pinMode(centerIRPin, INPUT);
+  pinMode(rightIRPin, INPUT);
+}
