@@ -1,0 +1,158 @@
+
+/*
+ * COGS 300 - Servo Test (No Servo.h)
+ *
+ * Purpose:
+ * - Test servo positioning without Servo.h.
+ * - Preserve existing PWM functionality
+ *   on Arduino Uno pins 9 and 10.
+ *
+ * Sequence:
+ * 1. Center (90 degrees)
+ * 2. Left   (150 degrees)
+ * 3. Center (90 degrees)
+ * 4. Right  (30 degrees)
+ *
+ * Servo signal pin: A5
+ *
+ * NOTE:
+ * This is a standalone test.
+ * It should NOT be added to the tournament
+ * sketch yet.
+ */
+
+// ==========================================
+// SERVO CONFIGURATION
+// ==========================================
+
+const int servoPin = A5;
+
+// Approximate control pulse widths.
+//
+// Different servos may require slightly
+// different values for accurate positioning.
+
+const int servoMinPulse = 1000;  // microseconds
+const int servoMaxPulse = 2000;  // microseconds
+
+// Servo positions.
+const int servoCenter = 90;
+const int servoLeft = 150;
+const int servoRight = 30;
+
+// Time between servo pulses.
+//
+// Standard hobby servos commonly use
+// a refresh interval of about 20 ms.
+const unsigned long servoPeriod = 20000UL;
+
+// How long to maintain each position.
+const unsigned long positionHoldTime = 1200;
+
+// ==========================================
+// SEND ONE SERVO CONTROL PULSE
+// ==========================================
+
+void sendServoPulse(int angle) {
+
+  // Keep the angle in the valid range.
+  angle = constrain(angle, 0, 180);
+
+  // Convert angle into pulse width.
+  int pulseWidth = map(
+    angle,
+    0, 180,
+    servoMinPulse,
+    servoMaxPulse
+  );
+
+  // Start a new control pulse.
+  digitalWrite(servoPin, HIGH);
+
+  // Keep signal HIGH for the desired width.
+  delayMicroseconds(pulseWidth);
+
+  // End the control pulse.
+  digitalWrite(servoPin, LOW);
+
+  // Wait until the next refresh cycle.
+  delayMicroseconds(servoPeriod - pulseWidth);
+}
+
+// ==========================================
+// HOLD A SERVO POSITION
+// ==========================================
+
+void holdServoPosition(int angle,
+                       unsigned long durationMs) {
+
+  // Record when the hold began.
+  unsigned long startTime = millis();
+
+  // Repeatedly send pulses until the
+  // requested hold duration has passed.
+  while (millis() - startTime < durationMs) {
+    sendServoPulse(angle);
+  }
+}
+
+// ==========================================
+// ARDUINO SETUP
+// ==========================================
+
+void setup() {
+
+  Serial.begin(9600);
+
+  pinMode(servoPin, OUTPUT);
+  digitalWrite(servoPin, LOW);
+
+  Serial.println("==========================");
+  Serial.println("COGS 300 - SERVO TEST");
+  Serial.println("No Servo.h library");
+  Serial.println("==========================");
+
+  // Begin with the servo centered.
+  Serial.println("Starting at CENTER (90 degrees)");
+
+  holdServoPosition(servoCenter, positionHoldTime);
+}
+
+// ==========================================
+// MAIN LOOP
+// ==========================================
+
+void loop() {
+
+  // ======================================
+  // LEFT POSITION
+  // ======================================
+
+  Serial.println("Moving LEFT (150 degrees)");
+
+  holdServoPosition(servoLeft, positionHoldTime);
+
+  // ======================================
+  // CENTER POSITION
+  // ======================================
+
+  Serial.println("Moving CENTER (90 degrees)");
+
+  holdServoPosition(servoCenter, positionHoldTime);
+
+  // ======================================
+  // RIGHT POSITION
+  // ======================================
+
+  Serial.println("Moving RIGHT (30 degrees)");
+
+  holdServoPosition(servoRight, positionHoldTime);
+
+  // ======================================
+  // RETURN TO CENTER
+  // ======================================
+
+  Serial.println("Returning CENTER (90 degrees)");
+
+  holdServoPosition(servoCenter, positionHoldTime);
+}
