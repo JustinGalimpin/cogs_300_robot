@@ -5,11 +5,11 @@
  *
  * Features:
  * - Three IR sensors (left, center, right).
- * - HIGH indicates white tape.
+ * - LOW indicates white tape.
  * - Straight movement when centered.
  * - Gradual left/right steering.
- * - Stronger corrections when off-center.
- * - Line recovery when all sensors lose tape.
+ * - Stronger corrections for sharp turns.
+ * - Immediate recovery when all sensors lose tape.
  *
  * Motor configuration preserved from Lab 5.
  */
@@ -50,35 +50,48 @@ bool rightOnLine = false;
 // ==========================================
 
 // Normal forward speed.
+// Preserved from our working Lab 7 code.
 const int baseSpeed = 100;
 
 // Strong steering correction.
-const int turnSpeed = 95;
-const int slowSpeed = 80;
+//
+// Previously:
+// turnSpeed = 95
+// slowSpeed = 80
+//
+// Increasing the difference between wheel
+// speeds allows the robot to turn more sharply.
+const int turnSpeed = 105;
+const int slowSpeed = 40;
 
 // Gentle steering correction.
-const int slightFastSpeed = 85;
-const int slightSlowSpeed = 70;
+//
+// Previously:
+// slightFastSpeed = 85
+// slightSlowSpeed = 70
+//
+// These values provide a moderate correction
+// when the center and one side sensor detect
+// the white tape simultaneously.
+const int slightFastSpeed = 90;
+const int slightSlowSpeed = 60;
 
 // Rotation speed during line recovery.
-const int searchSpeed = 75;
+// Preserved from our previous implementation.
+const int searchSpeed = 65;
 
 // ==========================================
 // LINE RECOVERY CONFIGURATION
 // ==========================================
 
-// -1 = Last detected on left
-//  0 = No known side
-//  1 = Last detected on right
+// Track the last known direction of the tape.
+//
+// -1 = Tape last detected toward the left
+//  0 = No known direction
+//  1 = Tape last detected toward the right
 int lastDirection = 0;
 
-// Record when the robot first loses the tape.
-unsigned long lineLostTime = 0;
-
-// Continue forward briefly before searching.
-const unsigned long lineLostDelay = 100;
-
-// Track whether the line is currently lost.
+// Track whether the robot has lost the tape.
 bool lineLost = false;
 
 // ==========================================
@@ -96,7 +109,7 @@ void setup() {
   pinMode(in3, OUTPUT);
   pinMode(in4, OUTPUT);
 
-  // Configure IR sensors.
+  // Configure IR sensor pins.
   pinMode(leftIRPin, INPUT);
   pinMode(centerIRPin, INPUT);
   pinMode(rightIRPin, INPUT);
@@ -104,11 +117,11 @@ void setup() {
   // Initialize Serial Monitor.
   Serial.begin(9600);
 
-  // Ensure robot starts stationary.
+  // Ensure the robot starts stationary.
   setMotors(0, 0);
 
   Serial.println("Lab 7 line-following ready!");
-  Serial.println("HIGH = White tape.");
+  Serial.println("LOW = White tape.");
 }
 
 // ==========================================
@@ -116,46 +129,58 @@ void setup() {
 // ==========================================
 
 /*
- * Positive speed = forward
- * Negative speed = backward
- * Zero = stop
+ * Controls the speed and direction of
+ * the robot's two motors.
+ *
+ * Positive speed = Forward
+ * Negative speed = Backward
+ * Zero = Stop
  *
  * Motor directions preserved from Lab 5.
  */
 
 void setMotors(int leftSpeed, int rightSpeed) {
 
+  // Prevent PWM speeds from exceeding
+  // the supported range.
   leftSpeed = constrain(leftSpeed, -255, 255);
   rightSpeed = constrain(rightSpeed, -255, 255);
 
   // LEFT MOTOR
   if (leftSpeed > 0) {
+
     digitalWrite(in1, LOW);
     digitalWrite(in2, HIGH);
   }
   else if (leftSpeed < 0) {
+
     digitalWrite(in1, HIGH);
     digitalWrite(in2, LOW);
   }
   else {
+
     digitalWrite(in1, LOW);
     digitalWrite(in2, LOW);
   }
 
   // RIGHT MOTOR
   if (rightSpeed > 0) {
+
     digitalWrite(in3, LOW);
     digitalWrite(in4, HIGH);
   }
   else if (rightSpeed < 0) {
+
     digitalWrite(in3, HIGH);
     digitalWrite(in4, LOW);
   }
   else {
+
     digitalWrite(in3, LOW);
     digitalWrite(in4, LOW);
   }
 
+  // Apply PWM speeds to both motors.
   analogWrite(enA, abs(leftSpeed));
   analogWrite(enB, abs(rightSpeed));
 }
@@ -163,6 +188,15 @@ void setMotors(int leftSpeed, int rightSpeed) {
 // ==========================================
 // IR SENSOR READINGS
 // ==========================================
+
+/*
+ * Reads the three IR sensors.
+ *
+ * Since LOW indicates white tape:
+ *
+ * true  = Sensor detects white tape
+ * false = Sensor detects dark floor
+ */
 
 void readIRSensors() {
 
@@ -180,36 +214,51 @@ void readIRSensors() {
 // LINE RECOVERY
 // ==========================================
 
+/*
+ * Called when all three IR sensors
+ * lose the white tape.
+ *
+ * Previously, the robot continued moving
+ * forward for 100 milliseconds before
+ * attempting recovery.
+ *
+ * This could cause the robot to overshoot
+ * sharp corners.
+ *
+ * NEW BEHAVIOUR:
+ * Immediately rotate toward the last
+ * known direction of the tape.
+ */
+
 void recoverLine() {
 
-  // Record when the tape first disappears.
+  // Record that the tape has been lost.
   if (!lineLost) {
     lineLost = true;
-    lineLostTime = millis();
+    Serial.println("Line lost! Searching...");
   }
 
-  // Continue forward briefly to avoid
-  // reacting to momentary sensor loss.
-  if (millis() - lineLostTime < lineLostDelay) {
-
-    setMotors(baseSpeed, baseSpeed);
-    return;
-  }
-
-  // Search toward the last known tape location.
+  // CASE 1: Tape was last detected
+  // toward the left.
   if (lastDirection == -1) {
 
-    // Rotate left.
+    // Rotate in place toward the left.
     setMotors(-searchSpeed, searchSpeed);
   }
+
+  // CASE 2: Tape was last detected
+  // toward the right.
   else if (lastDirection == 1) {
 
-    // Rotate right.
+    // Rotate in place toward the right.
     setMotors(searchSpeed, -searchSpeed);
   }
+
+  // CASE 3: No previous direction
+  // has been established.
   else {
 
-    // No known direction: stop safely.
+    // Stop rather than searching blindly.
     setMotors(0, 0);
   }
 }
@@ -218,83 +267,148 @@ void recoverLine() {
 // LINE-FOLLOWING CONTROLLER
 // ==========================================
 
+/*
+ * Uses the three IR sensors to determine
+ * how the robot should move.
+ *
+ * Sensor patterns:
+ *
+ * L C R
+ * -----
+ * 0 1 0 = Forward
+ * 1 0 0 = Strong left
+ * 0 0 1 = Strong right
+ * 1 1 0 = Slight left
+ * 0 1 1 = Slight right
+ * 1 1 1 = Forward
+ * 1 0 1 = Stop (ambiguous)
+ * 0 0 0 = Recover lost line
+ *
+ * 1 indicates white tape detected.
+ */
+
 void updateLineFollowing() {
 
-  // Read all three sensors.
+  // Read the latest IR sensor values.
   readIRSensors();
 
-  // CASE 1: No sensors detect white.
+  // ======================================
+  // CASE 1: NO WHITE TAPE DETECTED
+  // ======================================
+
   if (!leftOnLine &&
       !centerOnLine &&
       !rightOnLine) {
 
+    // Immediately attempt recovery.
     recoverLine();
     return;
   }
 
-  // Tape detected: reset recovery tracking.
+  // At least one sensor detects tape.
+  // Reset the line-loss state.
   lineLost = false;
 
-  // CASE 2: Center sensor detects white.
+  // ======================================
+  // CASE 2: CENTER SENSOR ONLY
+  // ======================================
+
   if (!leftOnLine &&
       centerOnLine &&
       !rightOnLine) {
 
+    // Robot is centered over the tape.
     setMotors(baseSpeed, baseSpeed);
 
-    // Do not erase the last known side.
-    // This helps with future recovery.
+    // Preserve the previous direction
+    // for potential future recovery.
   }
 
-  // CASE 3: Left sensor detects white.
+  // ======================================
+  // CASE 3: LEFT SENSOR ONLY
+  // ======================================
+
   else if (leftOnLine &&
            !centerOnLine &&
            !rightOnLine) {
 
+    // Strong left correction.
+    //
+    // Left wheel moves slower than
+    // right wheel, turning robot left.
     setMotors(slowSpeed, turnSpeed);
+
+    // Remember tape was toward the left.
     lastDirection = -1;
   }
 
-  // CASE 4: Right sensor detects white.
+  // ======================================
+  // CASE 4: RIGHT SENSOR ONLY
+  // ======================================
+
   else if (!leftOnLine &&
            !centerOnLine &&
            rightOnLine) {
 
+    // Strong right correction.
     setMotors(turnSpeed, slowSpeed);
+
+    // Remember tape was toward the right.
     lastDirection = 1;
   }
 
-  // CASE 5: Left and center detect white.
+  // ======================================
+  // CASE 5: LEFT + CENTER SENSORS
+  // ======================================
+
   else if (leftOnLine &&
            centerOnLine &&
            !rightOnLine) {
 
+    // Gentle left correction.
     setMotors(slightSlowSpeed, slightFastSpeed);
+
     lastDirection = -1;
   }
 
-  // CASE 6: Center and right detect white.
+  // ======================================
+  // CASE 6: CENTER + RIGHT SENSORS
+  // ======================================
+
   else if (!leftOnLine &&
            centerOnLine &&
            rightOnLine) {
 
+    // Gentle right correction.
     setMotors(slightFastSpeed, slightSlowSpeed);
+
     lastDirection = 1;
   }
 
-  // CASE 7: All three sensors detect white.
+  // ======================================
+  // CASE 7: ALL THREE SENSORS
+  // ======================================
+
   else if (leftOnLine &&
            centerOnLine &&
            rightOnLine) {
 
+    // All sensors detect white tape.
+    //
+    // Continue forward for now.
     setMotors(baseSpeed, baseSpeed);
   }
 
-  // CASE 8: Left and right detect white,
-  // but center does not.
+  // ======================================
+  // CASE 8: LEFT + RIGHT ONLY
+  // ======================================
+
   else {
 
-    // Ambiguous pattern: stop.
+    // Ambiguous detection pattern.
+    //
+    // Stop to avoid unpredictable
+    // steering behaviour.
     setMotors(0, 0);
   }
 }
@@ -316,7 +430,10 @@ void printSensorReadings() {
   Serial.print(rightOnLine);
 
   Serial.print(" | Last direction: ");
-  Serial.println(lastDirection);
+  Serial.print(lastDirection);
+
+  Serial.print(" | Line lost: ");
+  Serial.println(lineLost);
 }
 
 // ==========================================
@@ -325,10 +442,11 @@ void printSensorReadings() {
 
 void loop() {
 
-  // Update line-following continuously.
+  // Continuously update line-following.
   updateLineFollowing();
 
-  // Print sensor readings every 200 ms.
+  // Print sensor readings every 200 ms
+  // without interrupting motor control.
   static unsigned long lastPrintTime = 0;
 
   if (millis() - lastPrintTime >= 200) {
@@ -337,6 +455,6 @@ void loop() {
     lastPrintTime = millis();
   }
 
-  // Short delay for stable sensor polling.
+  // Short delay to stabilize polling.
   delay(10);
 }
