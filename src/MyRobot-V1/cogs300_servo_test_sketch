@@ -1,24 +1,24 @@
 
 /*
- * COGS 300 - Servo Test (No Servo.h)
+ * COGS 300 - Lab 08
+ * Standalone Servo Sweep Test
  *
  * Purpose:
- * - Test servo positioning without Servo.h.
- * - Preserve existing PWM functionality
- *   on Arduino Uno pins 9 and 10.
+ * - Test servo movement without Servo.h.
+ * - Sweep in 30-degree increments.
+ * - Preserve PWM functionality on pins 9 and 10.
  *
- * Sequence:
- * 1. Center (90 degrees)
- * 2. Left   (150 degrees)
- * 3. Center (90 degrees)
- * 4. Right  (30 degrees)
+ * Sweep:
+ * 30 -> 60 -> 90 -> 120 -> 150
+ * 150 -> 120 -> 90 -> 60 -> 30
  *
- * Servo signal pin: A5
+ * Hardware:
+ * - Arduino Uno
+ * - Standard positional servo
+ * - Servo signal connected to A5
  *
- * NOTE:
  * This is a standalone test.
- * It should NOT be added to the tournament
- * sketch yet.
+ * Do not add it to the tournament sketch yet.
  */
 
 // ==========================================
@@ -27,38 +27,45 @@
 
 const int servoPin = A5;
 
-// Approximate control pulse widths.
+// Servo pulse widths (microseconds).
 //
-// Different servos may require slightly
-// different values for accurate positioning.
+// These are approximate values for a
+// standard 180-degree positional servo.
+const int servoMinPulse = 1000;
+const int servoMaxPulse = 2000;
 
-const int servoMinPulse = 1000;  // microseconds
-const int servoMaxPulse = 2000;  // microseconds
+// Sweep settings.
+const int servoMinAngle = 30;
+const int servoMaxAngle = 150;
+const int servoStep = 30;
 
-// Servo positions.
-const int servoCenter = 90;
-const int servoLeft = 150;
-const int servoRight = 30;
-
-// Time between servo pulses.
-//
-// Standard hobby servos commonly use
-// a refresh interval of about 20 ms.
+// Servo refresh period (microseconds).
 const unsigned long servoPeriod = 20000UL;
 
-// How long to maintain each position.
-const unsigned long positionHoldTime = 1200;
+// Time spent at each position (milliseconds).
+const unsigned long servoHoldTime = 700;
 
 // ==========================================
-// SEND ONE SERVO CONTROL PULSE
+// SWEEP VARIABLES
+// ==========================================
+
+// Start at the minimum sweep angle.
+int currentServoAngle = servoMinAngle;
+
+// +1 means increasing angle.
+// -1 means decreasing angle.
+int servoDirection = 1;
+
+// ==========================================
+// SEND ONE SERVO PULSE
 // ==========================================
 
 void sendServoPulse(int angle) {
 
-  // Keep the angle in the valid range.
+  // Keep requested angle within 0-180.
   angle = constrain(angle, 0, 180);
 
-  // Convert angle into pulse width.
+  // Convert angle to pulse width.
   int pulseWidth = map(
     angle,
     0, 180,
@@ -66,33 +73,54 @@ void sendServoPulse(int angle) {
     servoMaxPulse
   );
 
-  // Start a new control pulse.
+  // Send the HIGH portion of the pulse.
   digitalWrite(servoPin, HIGH);
-
-  // Keep signal HIGH for the desired width.
   delayMicroseconds(pulseWidth);
 
-  // End the control pulse.
+  // Finish the pulse.
   digitalWrite(servoPin, LOW);
 
-  // Wait until the next refresh cycle.
+  // Wait until the next refresh period.
   delayMicroseconds(servoPeriod - pulseWidth);
 }
 
 // ==========================================
-// HOLD A SERVO POSITION
+// HOLD SERVO AT AN ANGLE
 // ==========================================
 
 void holdServoPosition(int angle,
                        unsigned long durationMs) {
 
-  // Record when the hold began.
   unsigned long startTime = millis();
 
-  // Repeatedly send pulses until the
-  // requested hold duration has passed.
+  // Continuously send servo pulses to
+  // maintain the requested position.
   while (millis() - startTime < durationMs) {
     sendServoPulse(angle);
+  }
+}
+
+// ==========================================
+// ADVANCE TO NEXT SWEEP POSITION
+// ==========================================
+
+void advanceServoPosition() {
+
+  // Move one increment in the current direction.
+  currentServoAngle += servoStep * servoDirection;
+
+  // Reverse direction at the maximum angle.
+  if (currentServoAngle >= servoMaxAngle) {
+
+    currentServoAngle = servoMaxAngle;
+    servoDirection = -1;
+  }
+
+  // Reverse direction at the minimum angle.
+  else if (currentServoAngle <= servoMinAngle) {
+
+    currentServoAngle = servoMinAngle;
+    servoDirection = 1;
   }
 }
 
@@ -108,14 +136,15 @@ void setup() {
   digitalWrite(servoPin, LOW);
 
   Serial.println("==========================");
-  Serial.println("COGS 300 - SERVO TEST");
+  Serial.println("COGS 300 - SERVO SWEEP TEST");
   Serial.println("No Servo.h library");
   Serial.println("==========================");
 
-  // Begin with the servo centered.
-  Serial.println("Starting at CENTER (90 degrees)");
+  Serial.println("Sweep range: 30 to 150 degrees");
+  Serial.println("Step size: 30 degrees");
 
-  holdServoPosition(servoCenter, positionHoldTime);
+  // Begin by holding the servo at 30 degrees.
+  holdServoPosition(currentServoAngle, 1000);
 }
 
 // ==========================================
@@ -124,35 +153,13 @@ void setup() {
 
 void loop() {
 
-  // ======================================
-  // LEFT POSITION
-  // ======================================
+  Serial.print("Servo angle: ");
+  Serial.println(currentServoAngle);
 
-  Serial.println("Moving LEFT (150 degrees)");
+  // Hold the current position long enough
+  // for the servo to physically move there.
+  holdServoPosition(currentServoAngle, servoHoldTime);
 
-  holdServoPosition(servoLeft, positionHoldTime);
-
-  // ======================================
-  // CENTER POSITION
-  // ======================================
-
-  Serial.println("Moving CENTER (90 degrees)");
-
-  holdServoPosition(servoCenter, positionHoldTime);
-
-  // ======================================
-  // RIGHT POSITION
-  // ======================================
-
-  Serial.println("Moving RIGHT (30 degrees)");
-
-  holdServoPosition(servoRight, positionHoldTime);
-
-  // ======================================
-  // RETURN TO CENTER
-  // ======================================
-
-  Serial.println("Returning CENTER (90 degrees)");
-
-  holdServoPosition(servoCenter, positionHoldTime);
+  // Advance to the next position.
+  advanceServoPosition();
 }
