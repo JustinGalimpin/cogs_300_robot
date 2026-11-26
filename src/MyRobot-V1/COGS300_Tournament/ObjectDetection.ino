@@ -9,12 +9,12 @@
  * - Servo-based ultrasonic scanning
  * - No Servo.h library required
  * - Scan from 30 to 150 degrees
- * - Measurements every 15 degrees
+ * - Measurements every 10 degrees
  * - Group readings into candidate objects
- * - Prefer the largest estimated object
+ * - Select largest estimated object in current sweep
  * - Rotate chassis toward selected target
  * - Verify target before approaching
- * - Drive toward selected target
+ * - Drive in short increments and rescan
  * - Avoid white-tape arena boundaries
  *
  * Hardware:
@@ -46,9 +46,7 @@
  * have external linkage.
  */
 
-extern const int servoScanStep;
-extern const int servoMinAngle;
-extern const int servoMaxAngle;
+extern bool leftOnLine, centerOnLine, rightOnLine;
 extern const int servoCenterAngle;
 
 extern const int frontTrigPin;
@@ -75,9 +73,10 @@ ObjectState objectState = SCANNING;
 // ==========================================
 
 // Reduced speeds for initial testing.
-const int objectTurnSpeed = 70;
-const int objectApproachSpeed = 75;
-const int objectReverseSpeed = 75;
+const int objectTurnSpeed = 75;
+const int objectApproachSpeed = 110;
+const int objectNearApproachSpeed = 75;
+const int objectReverseSpeed = 130;
 
 // ==========================================
 // DISTANCE CONFIGURATION
@@ -87,33 +86,37 @@ const int objectReverseSpeed = 75;
 const float objectMinDistance = 4.0;
 
 // Maximum distance considered for detection.
-const float objectMaxDistance = 100.0;
+const float objectMaxDistance = 240.0;
 
 // Stop when an object is this close.
-const float objectStopDistance = 12.0;
+const float objectStopDistance = 2.0;
+const float objectNearDistance = 25.0;
+const float objectExploreClearance = 35.0;
+const float objectUnexpectedDrop = 12.0;
+
 
 // Maximum difference between consecutive
 // readings grouped into the same object.
-const float objectGroupingTolerance = 18.0;
+const float objectGroupingTolerance = 10.0;
 
 // Allowed difference between the original
 // target distance and verification distance.
-const float objectVerifyTolerance = 25.0;
+const float objectVerifyTolerance = 12.0;
 
 // ==========================================
 // SCAN CONFIGURATION
 // ==========================================
 
-// Scan from 30 to 150 degrees,
-// taking measurements every 15 degrees.
-//
-// Total measurement positions:
-// 30, 45, 60, 75, 90, 105, 120, 135, 150
-
-const int objectScanCount = 9;
+// Local scan settings: no changes needed in Sensors.ino.
+const int objectScanMinAngle = 30;
+const int objectScanMaxAngle = 150;
+const int objectScanStep = 15;
+const int objectScanCount = (objectScanMaxAngle - objectScanMinAngle) / objectScanStep + 1;
+const unsigned long objectPingGap = 60;
+const int objectBeamAllowance = 0; // Calibrate using known objects.
 
 // Time allowed for servo positioning.
-const unsigned long objectServoSettleTime = 300;
+const unsigned long objectServoSettleTime = 100;
 
 // ==========================================
 // ROTATION CONFIGURATION
@@ -134,17 +137,18 @@ const unsigned long objectCounterClockwise360Time = 3000;
 
 // Rotation duration when searching
 // for objects outside the current sweep.
-const unsigned long objectSearchTurnTime = 750;
+const unsigned long objectSearchTurnTime = 600;
 
 // ==========================================
 // BOUNDARY AVOIDANCE CONFIGURATION
 // ==========================================
 
 // Time spent reversing from white tape.
-const unsigned long objectReverseTime = 450;
+const unsigned long objectReverseTime = 350;
 
 // Time spent turning away from boundary.
-const unsigned long objectBoundaryTurnTime = 550;
+const unsigned long objectBoundaryTurnTime = 500;
+const unsigned long objectWideBoundaryTurnTime = 850;
 
 // ==========================================
 // APPROACH CONFIGURATION
@@ -154,7 +158,10 @@ const unsigned long objectBoundaryTurnTime = 550;
 const unsigned long objectApproachInterval = 100;
 
 // Maximum time spent approaching a target.
-const unsigned long objectMaxApproachTime = 5000;
+const unsigned long objectForwardStepTime = 600;
+const unsigned long objectNearStepTime = 400;
+const unsigned long objectExploreStepTime = 700;
+const int objectMaxSearchRotations = 5;
 
 // Number of consecutive invalid readings
 // allowed before abandoning the target.
@@ -206,6 +213,14 @@ unsigned long objectTurnDuration = 0;
 // 0 = reverse
 // 1 = turn away
 int objectBoundaryPhase = 0;
+unsigned long objectRecoveryTurnTime = objectBoundaryTurnTime;
+float objectPreviousDistance = -1;
+
+int objectDefaultEscapeDirection = 1;
+int objectSearchRotations = 0;
+bool objectExploring = false;
+unsigned long objectStepDuration = 0;
+unsigned long objectLastServoRefresh = 0;
 
 // ==========================================
 // HELPER: VALID DISTANCE
@@ -242,6 +257,26 @@ bool objectBoundaryDetected() {
          rightOnLine;
 }
 
+// Take three readings at ONE angle. A majority must be valid.
+// Keep the servo energized between pings without Servo.h.
+float objectMedianAtAngle(int angle) {
+  float values[3];
+  int count = 0;
+  for (int i = 0; i < 3; i++) {
+    float d = measureDistance(frontTrigPin, frontEchoPin);
+    if (d > 0) values[count++] = d;
+    holdServoPosition(angle, objectPingGap);
+  }
+  if (count < 2) return -1;
+  for (int i = 0; i < count; i++)
+    for (int j = i + 1; j < count; j++)
+      if (values[j] < values[i]) {
+        float t = values[i]; values[i] = values[j]; values[j] = t;
+      }
+  if (count == 2 && fabs(values[0] - values[1]) > objectGroupingTolerance) return -1;
+  return count == 3 ? values[1] : (values[0] + values[1]) / 2.0f;
+}
+
 // ==========================================
 // START NEW OBJECT SCAN
 // ==========================================
@@ -252,6 +287,7 @@ void startObjectScan() {
   setMotors(0, 0);
 
   objectScanIndex = 0;
+  objectExploring = false;
 
   objectFound = false;
 
@@ -260,6 +296,8 @@ void startObjectScan() {
   objectTargetAngle = 90;
 
   objectInvalidReadings = 0;
+
+  objectPreviousDistance = -1;
 
   // Clear previous scan measurements.
   for (int i = 0; i < objectScanCount; i++) {
@@ -279,6 +317,7 @@ void startObjectScan() {
 // ==========================================
 
 void initializeObjectDetection() {
+  objectSearchRotations = 0;
 
   // Ensure robot begins stationary.
   setMotors(0, 0);
@@ -305,8 +344,7 @@ void initializeObjectDetection() {
  *
  * width = 2 * distance * tan(angle / 2)
  *
- * The candidate with the greatest
- * estimated width is selected.
+ * The candidate with the largest estimated physical width is selected.
  *
  * IMPORTANT:
  * This is an approximation because the
@@ -369,12 +407,11 @@ void analyzeObjectScan() {
 
       // Estimate angular coverage.
       float angularWidth =
-        (groupEnd - groupStart + 1) *
-        servoScanStep;
+        (groupEnd - groupStart + 1) * objectScanStep;
 
       // Convert half-angle into radians.
       float halfAngleRadians =
-        (angularWidth / 2.0) *
+        (max(1.0f, angularWidth - objectBeamAllowance) / 2.0) *
         PI / 180.0;
 
       // Approximate physical width.
@@ -383,12 +420,11 @@ void analyzeObjectScan() {
         tan(halfAngleRadians);
 
       // Determine the group's center.
-      int centerIndex =
-        (groupStart + groupEnd) / 2;
+      float centerIndex = (groupStart + groupEnd) / 2.0f;
 
       int centerAngle =
-        servoMinAngle +
-        centerIndex * servoScanStep;
+        objectScanMinAngle +
+        centerIndex * objectScanStep;
 
       Serial.print("Candidate at ");
       Serial.print(centerAngle);
@@ -401,9 +437,10 @@ void analyzeObjectScan() {
 
       Serial.println(" cm");
 
-      // Select the largest candidate.
-      if (!objectFound ||
-          estimatedWidth > objectTargetWidth) {
+      // Rank all detected groups by estimated physical width.
+      // Edge groups are allowed, but their width may be underestimated.
+      // No fixed target width or acceptance range is required.
+      if (!objectFound || estimatedWidth > objectTargetWidth) {
 
         objectFound = true;
 
@@ -450,6 +487,7 @@ void beginObjectTurn(
  */
 
 void startBoundaryAvoidance() {
+  objectSearchRotations = 0;
 
   setMotors(0, 0);
 
@@ -473,10 +511,10 @@ void startBoundaryAvoidance() {
   // Center or multiple sensors:
   // use a default right turn.
   else {
-
-    objectTurnDirection = 1;
+    objectTurnDirection = objectDefaultEscapeDirection;
+    objectDefaultEscapeDirection *= -1;
   }
-
+  objectRecoveryTurnTime = (leftOnLine && rightOnLine) || (centerOnLine && (leftOnLine || rightOnLine)) ? objectWideBoundaryTurnTime : objectBoundaryTurnTime;
   objectBoundaryPhase = 0;
 
   objectStateStartTime = millis();
@@ -520,12 +558,31 @@ void scanForObjects() {
       // Center sensor before rotating.
       centerFrontServo();
 
+      // After a full approximate search rotation, explore only if
+      // the centered sensor confirms a clear path. No echo is not clearance.
+      if (objectSearchRotations >= objectMaxSearchRotations) {
+        objectSearchRotations = 0;
+        float ahead = objectMedianAtAngle(servoCenterAngle);
+        if (objectBoundaryDetected()) { startBoundaryAvoidance(); return; }
+        if (ahead >= objectExploreClearance) {
+          objectExploring = true;
+          objectPreviousDistance = ahead;
+          objectStepDuration = objectExploreStepTime;
+          objectApproachStartTime = millis();
+          objectLastApproachTime = millis() - objectApproachInterval;
+          objectState = APPROACHING_OBJECT;
+          Serial.println("Exploring one short step");
+          return;
+        }
+      }
+      objectSearchRotations++;
       objectState = SEARCH_ROTATION;
       objectStateStartTime = millis();
 
       return;
     }
 
+    objectSearchRotations = 0;
     // Target candidate found.
     Serial.println("Largest candidate selected.");
 
@@ -588,13 +645,13 @@ void scanForObjects() {
   // ======================================
 
   int scanAngle =
-    servoMinAngle +
-    objectScanIndex * servoScanStep;
+    objectScanMinAngle +
+    objectScanIndex * objectScanStep;
 
   // Move servo and allow it to settle.
   holdServoPosition(
     scanAngle,
-    objectServoSettleTime
+    objectScanIndex == 0 ? 300 : objectServoSettleTime
   );
 
   // Check boundary after positioning.
@@ -608,8 +665,17 @@ void scanForObjects() {
   // COLLECT ULTRASONIC MEASUREMENT
   // ======================================
 
-  float distance =
-    measureDistance(frontTrigPin, frontEchoPin);
+  float distance = objectMedianAtAngle(scanAngle);
+
+  // Only a straight-ahead reading can finish the stage during a sweep.
+  if (objectBoundaryDetected()) { startBoundaryAvoidance(); return; }
+  if (scanAngle == servoCenterAngle && distance > 0 &&
+      distance <= objectStopDistance) {
+    setMotors(0, 0);
+    objectState = OBJECT_REACHED;
+    Serial.println("OBJECT REACHED!");
+    return;
+  }
 
   objectScanDistances[objectScanIndex] =
     distance;
@@ -676,152 +742,92 @@ void turnToObject() {
 // VERIFY SELECTED TARGET
 // ==========================================
 
-void verifyObjectTarget() {
-
+void startObjectObstacleRecovery() {
+  objectSearchRotations = 0;
   setMotors(0, 0);
-
-  if (objectBoundaryDetected()) {
-
-    startBoundaryAvoidance();
-    return;
-  }
-
-  // Allow chassis to settle after turning.
-  if (millis() - objectStateStartTime < 250) {
-    return;
-  }
-
-  // Point sensor straight ahead.
-  centerFrontServo();
-
-  float distance =
-    measureDistance(frontTrigPin, frontEchoPin);
-
-  Serial.print("Verification distance: ");
-  Serial.println(distance);
-
-  // Invalid measurement.
-  if (!isValidObjectDistance(distance)) {
-
-    objectInvalidReadings++;
-
-    if (objectInvalidReadings >=
-        objectMaxInvalidReadings) {
-
-      Serial.println("Verification failed.");
-      startObjectScan();
-    }
-
-    return;
-  }
-
-  // Reject readings that differ too much
-  // from the selected candidate.
-  if (abs(distance - objectTargetDistance) >
-      objectVerifyTolerance) {
-
-    Serial.println("Target mismatch. Rescanning...");
-
-    startObjectScan();
-    return;
-  }
-
-  Serial.println("Target verified!");
-
-  objectInvalidReadings = 0;
-
-  objectApproachStartTime = millis();
-  objectLastApproachTime = 0;
-
-  objectState = APPROACHING_OBJECT;
+  objectTurnDirection = objectDefaultEscapeDirection;
+  objectDefaultEscapeDirection *= -1;
+  objectRecoveryTurnTime = objectBoundaryTurnTime;
+  objectBoundaryPhase = 0;
+  objectStateStartTime = millis();
+  objectState = AVOIDING_BOUNDARY;
+  Serial.println("Unexpected obstacle: reversing and rescanning");
 }
 
-// ==========================================
-// APPROACH SELECTED TARGET
-// ==========================================
-
-void approachObject() {
-
-  // Boundary detection takes priority.
-  if (objectBoundaryDetected()) {
-
-    startBoundaryAvoidance();
-    return;
-  }
-
-  unsigned long currentTime = millis();
-
-  // Stop if approaching takes too long.
-  if (currentTime - objectApproachStartTime >=
-      objectMaxApproachTime) {
-
-    Serial.println("Approach timeout.");
-
-    startObjectScan();
-    return;
-  }
-
-  // Only take measurements at the
-  // configured interval.
-  if (currentTime - objectLastApproachTime <
-      objectApproachInterval) {
-
-    return;
-  }
-
-  objectLastApproachTime = currentTime;
-
-  float distance =
-    measureDistance(frontTrigPin, frontEchoPin);
-
-  // Stop if sensor loses the target.
-  if (!isValidObjectDistance(distance)) {
-
+void verifyObjectTarget() {
+  setMotors(0, 0);
+  if (objectBoundaryDetected()) { startBoundaryAvoidance(); return; }
+  if (millis() - objectStateStartTime < 250) return;
+  centerFrontServo();
+  float distance = objectMedianAtAngle(servoCenterAngle);
+  if (objectBoundaryDetected()) { startBoundaryAvoidance(); return; }
+  Serial.print("Verification distance: "); Serial.println(distance);
+  // Arrival takes priority over distance mismatch or obstacle recovery.
+  if (distance > 0 && distance <= objectStopDistance) {
     setMotors(0, 0);
-
-    objectInvalidReadings++;
-
-    if (objectInvalidReadings >=
-        objectMaxInvalidReadings) {
-
-      Serial.println("Target lost.");
-
-      startObjectScan();
-    }
-
-    return;
-  }
-
-  objectInvalidReadings = 0;
-
-  // ======================================
-  // OBJECT REACHED
-  // ======================================
-
-  if (distance <= objectStopDistance) {
-
-    setMotors(0, 0);
-
     objectState = OBJECT_REACHED;
-
-    Serial.println("=========================");
     Serial.println("OBJECT REACHED!");
-    Serial.println("=========================");
-
     return;
   }
+  if (!isValidObjectDistance(distance) ||
+      fabs(distance - objectTargetDistance) > objectVerifyTolerance) {
+    if (++objectInvalidReadings >= objectMaxInvalidReadings) startObjectScan();
+    return;
+  }
+  objectPreviousDistance = distance;
+  objectInvalidReadings = 0;
+  objectStepDuration = distance <= objectNearDistance ?
+                       objectNearStepTime : objectForwardStepTime;
+  objectApproachStartTime = millis();
+  objectLastApproachTime = millis() - objectApproachInterval;
+  objectState = APPROACHING_OBJECT;
+  Serial.println("Target verified: beginning one forward step");
+}
 
-  // ======================================
-  // MOVE FORWARD
-  // ======================================
-
-  setMotors(
-    objectApproachSpeed,
-    objectApproachSpeed
-  );
-
-  Serial.print("Approaching | Distance: ");
-  Serial.println(distance);
+// Move for only one short increment. IR takes priority each loop.
+// A valid close front reading ends the stage immediately.
+void approachObject() {
+  if (objectBoundaryDetected()) { startBoundaryAvoidance(); return; }
+  unsigned long now = millis();
+  if (now - objectApproachStartTime >= objectStepDuration) {
+    startObjectScan(); return;
+  }
+  if (now - objectLastApproachTime >= objectApproachInterval) {
+    objectLastApproachTime = now;
+    float distance = measureDistance(frontTrigPin, frontEchoPin);
+    if (objectBoundaryDetected()) { startBoundaryAvoidance(); return; }
+    // Check arrival before rejecting close readings as obstacles.
+    if (distance > 0 && distance <= objectStopDistance) {
+      setMotors(0, 0);
+      objectState = OBJECT_REACHED;
+      Serial.println("OBJECT REACHED!");
+      return;
+    }
+    if (distance > 0 && (distance < objectMinDistance ||
+        objectPreviousDistance - distance > objectUnexpectedDrop ||
+        (objectExploring && distance <= objectNearDistance))) {
+      startObjectObstacleRecovery(); return;
+    }
+    if (distance <= 0 || (!objectExploring &&
+        (!isValidObjectDistance(distance) ||
+         distance - objectPreviousDistance > objectVerifyTolerance))) {
+      startObjectScan(); return;
+    }
+    objectPreviousDistance = distance;
+    Serial.print("Forward step | Distance: "); Serial.println(distance);
+  }
+  // Refresh the manual servo without using Timer1. One pulse blocks ~20 ms.
+  if (millis() - objectLastServoRefresh >= 20) {
+    objectLastServoRefresh = millis();
+    sendServoPulse(servoCenterAngle);
+  }
+  if (objectBoundaryDetected()) { startBoundaryAvoidance(); return; }
+  if (millis() - objectApproachStartTime >= objectStepDuration) {
+    startObjectScan(); return;
+  }
+  int forwardSpeed = objectPreviousDistance <= objectNearDistance
+                     ? objectNearApproachSpeed : objectApproachSpeed;
+  setMotors(forwardSpeed, forwardSpeed);
 }
 
 // ==========================================
@@ -863,7 +869,8 @@ void avoidObjectBoundary() {
   // PHASE 1: TURN AWAY
   // ======================================
 
-  if (elapsed < objectBoundaryTurnTime) {
+  if (objectBoundaryDetected()) { startBoundaryAvoidance(); return; }
+  if (elapsed < objectRecoveryTurnTime) {
 
     if (objectTurnDirection == 1) {
 
