@@ -89,7 +89,7 @@ const float objectMinDistance = 4.0;
 const float objectMaxDistance = 240.0;
 
 // Stop when an object is this close.
-const float objectStopDistance = 2.0;
+const float objectStopDistance = 0.5;
 const float objectNearDistance = 25.0;
 const float objectExploreClearance = 35.0;
 const float objectUnexpectedDrop = 12.0;

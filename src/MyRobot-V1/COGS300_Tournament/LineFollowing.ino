@@ -10,11 +10,11 @@ extern bool rightOnLine;
 const int lineBaseSpeed = 100;
 
 // Strong steering correction.
-const int lineTurnSpeed = 105;
+const int lineTurnSpeed = 90;
 const int lineSlowSpeed = 40;
 
 // Gentle steering correction.
-const int lineSlightFastSpeed = 90;
+const int lineSlightFastSpeed = 80;
 const int lineSlightSlowSpeed = 60;
 
 // Rotation speed during line recovery.
